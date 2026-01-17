@@ -1,6 +1,7 @@
 package mproxy
 import(
 	"net/http"
+	"crypto/tls"
 )
 
 // 上下文机制很重要，保留本次连接的转发fd和请求fd，保证通路。
@@ -11,6 +12,9 @@ type Pcontext struct{
 	Req *http.Request
 	Resp *http.Response
 	RoundTripper RoundTripper
+	UserData any
+
+	certStore CertStorage
 	Error error
 	Session int64
 	TrafficCounter *TrafficCounter // 全局流量计数器，记录整个请求-响应周期的流量
@@ -30,7 +34,11 @@ func (ctx *Pcontext) RoundTrip(req *http.Request) (*http.Response, error) {
 		return ctx.RoundTripper.RoundTrip(req, ctx)
 	}
 	// 如果没有自定义发送函数，则使用transport的
-	return ctx.core_proxy.transport.RoundTrip(req) 
+	return ctx.core_proxy.Transport.RoundTrip(req) 
+}
+
+type CertStorage interface {
+	Fetch(hostname string, gen func() (*tls.Certificate, error)) (*tls.Certificate, error)
 }
 
 

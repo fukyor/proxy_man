@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"io"
+	"regexp"
+	"net"
 )
 
 /*
@@ -14,20 +16,28 @@ import (
 然后处理socket数据并通过clientfd转发。
 */
 type CoreHttpServer struct{ 
-	transport *http.Transport  // 作为client端转发请求
+	Transport *http.Transport  // 作为client端转发请求
 	DirectHandler http.Handler
 	reqHandlers []ReqHandler    // 封装请求过滤器
 	respHandlers []RespHandler	// 封装响应过滤器
+	httpsHandlers []HttpsHandler
+	ConnectMutiDial        func(network string, addr string) (net.Conn, error) // 多级代理
+	ConnectWithReqDial func(req *http.Request, network string, addr string) (net.Conn, error) // 分流规则
+	
+	ConnectionErrHandler func(conn io.Writer, ctx *Pcontext, err error)
 
 	Logger Logger
 	Verbose bool
 	KeepHeader bool 
 	sess	int64 // 全局日志ID，每来一个请求都加1
 
+	AllowHTTP2 bool
+	PreventParseHeader bool
 	KeepCurHeaders bool
 	KeepAcceptEncoding bool
 }
 
+var Port = regexp.MustCompile(`:\d+$`)
 
 type flushWriter struct {
 	w io.Writer
@@ -99,9 +109,10 @@ func (proxy *CoreHttpServer) filterResponse(respOrig *http.Response, ctx *Pconte
 func (proxy *CoreHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request){
 	if r.Method == http.MethodConnect{
 		//调用https处理器
+		proxy.MyHttpsHandle(w, r)
 	}else{
-		//调用http处理器
-		proxy.MyHttpHandler(w, r)
+		//调用http处理器, 
+		proxy.MyHttpHandle(w, r)
 		
 	}
 }
@@ -110,9 +121,14 @@ func (proxy *CoreHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request){
 func NewCoreHttpSever() *CoreHttpServer{ 
 	core_proxy := &CoreHttpServer{
 		Logger: log.New(os.Stderr, "", log.LstdFlags),
-		transport: &http.Transport{
-			TLSClientConfig: tlsIgnoreVerify,
-			Proxy: http.ProxyFromEnvironment, //从环境变量读取http_proxy作为代理，而不使用硬编码
+		DirectHandler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			http.Error(w, "非代理请求This is a proxy server. Does not respond to non-proxy requests.", http.StatusInternalServerError)
+		}),
+		// 自定义tr用于代理发送请求
+		Transport: &http.Transport{
+			TLSClientConfig: tlsClientSkipVerify,
+			//Proxy: http.ProxyFromEnvironment, //从环境变量读取http_proxy作为代理，而不使用硬编码
+			Proxy: nil,
 		},
 	}
 	return core_proxy

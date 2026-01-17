@@ -82,7 +82,7 @@ func demo() {
 
 	/*************************************打印响应头************************************/
 	// 同时用请求条件和响应条件（链式调用）
-	proxy.OnResponse(mproxy.ContentTypeHook("text/html")).OnRespByReq(mproxy.UrlHook("/api")).DoFunc(func(resp *http.Response, ctx *mproxy.Pcontext) *http.Response {
+	proxy.HookOnResp(mproxy.ContentTypeHook("text/html")).OnRespByReq(mproxy.UrlHook("/api")).DoFunc(func(resp *http.Response, ctx *mproxy.Pcontext) *http.Response {
 		dumpBytes, err := httputil.DumpResponse(resp, true)
 		if err != nil {
 			fmt.Println("DumpResponse error:", err)
@@ -93,7 +93,7 @@ func demo() {
 		return resp
 	})
 
-	proxy.OnResponse().OnRespByReq().DoFunc(func(resp *http.Response, ctx *mproxy.Pcontext) *http.Response {
+	proxy.HookOnResp().OnRespByReq().DoFunc(func(resp *http.Response, ctx *mproxy.Pcontext) *http.Response {
 		resp.Header.Del("Content-Type")
 		return resp
 	})

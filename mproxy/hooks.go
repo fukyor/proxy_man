@@ -18,10 +18,11 @@ type RespCondition interface {
 	HandleResp(resp *http.Response, ctx *Pcontext) bool
 }
 
-/**************************条件适配器(函数适配器)*********************************/
+/**************************条件适配器(函数适配器，把任意函数通过函数适配器准确适配接口)*********************************/
 type ReqConditionFunc func(req *http.Request, ctx *Pcontext) bool
 
 type RespConditionFunc func(resp *http.Response, ctx *Pcontext) bool
+
 
 // ReqCondition作为RespCondition的子类实现了父类接口。目的是在HookOnResp传参时可以把ReqConditionFunc直接传入，这样就能用Req的
 // 条件在filterResp时也能生效。达到双层条件判断。
@@ -37,7 +38,8 @@ func (c RespConditionFunc) HandleResp(resp *http.Response, ctx *Pcontext) bool {
 	return c(resp, ctx)
 }
 
-/**************************条件过滤器核心********************************/
+
+/**************************条件过滤器判断函数********************************/
 func (proxy *CoreHttpServer) HookOnReq(conds ...ReqCondition) *ReqProxyConds {
 	return &ReqProxyConds{proxy, conds}
 }
@@ -52,6 +54,8 @@ func (pcond *RespProxyConds) OnRespByReq(conds ...ReqCondition) *RespProxyConds 
 	return pcond
 }
 
+
+/*****************************条件过滤器执行函数*************************************/
 // DoFunc是对Do的再封装，我们可以直接向DoFunc传函数而不需要先强转为FuncReqHandler适配器
 func (pcond *ReqProxyConds) DoFunc(f func(req *http.Request, ctx *Pcontext) (*http.Request, *http.Response)) {
 	pcond.Do(FuncReqHandler(f))
@@ -93,6 +97,25 @@ func (pcond *RespProxyConds) Do(h RespHandler) {
 		}))
 }
 
+func (pcond *ReqProxyConds) DoConnectFunc(f func(host string, ctx *Pcontext) (*ConnectAction, string)) {
+	pcond.HandleConnect(FuncHttpsHandler(f))
+}
+
+//HandleConnect 主要就是做一个简单的策略决策，返回预定义的连接动作即可，不需要像 Handle 那样处理复杂的请求/响应内容。
+func (pcond *ReqProxyConds) HandleConnect(h HttpsHandler) {
+	pcond.proxy.httpsHandlers = append(pcond.proxy.httpsHandlers,
+		FuncHttpsHandler(func(host string, ctx *Pcontext) (*ConnectAction, string) {
+			for _, cond := range pcond.reqConds {
+				if !cond.HandleReq(ctx.Req, ctx) {
+					return nil, "" // 返回值的用法
+				}
+			}
+			return h.HandleConnect(host, ctx)
+		}))
+}
+
+
+/***********************条件结构体*****************************/
 type ReqProxyConds struct {
 	proxy    *CoreHttpServer
 	reqConds []ReqCondition
@@ -106,7 +129,7 @@ type RespProxyConds struct {
 
 
 
-/********************条件过滤闭包函数***********************/
+/********************条件过滤判断闭包函数***********************/
 func UrlHook(urls ...string) ReqConditionFunc {
 	urlSet := make(map[string]bool)
 	for _, u := range urls {

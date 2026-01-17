@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 )
 
 // 流量计数器
 func AddTrafficMonitor(proxy *CoreHttpServer) {
 	// 请求阶段
 	proxy.HookOnReq().DoFunc(func(req *http.Request, ctx *Pcontext) (*http.Request, *http.Response) {
+		if ctx.TrafficCounter == nil {
+			return req, nil
+		}
 		// 记录请求头大小
 		ctx.TrafficCounter.req_header = GetHeaderSize(req, ctx)
 		// 如果有请求体，包装它
@@ -49,7 +53,8 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		resp.Body = &TrafficCounter{
 			ReadCloser: resp.Body,
 			onClose: func(bodyBytes int64) {
-				ctx.TrafficCounter.resp_sum = bodyBytes
+				ctx.TrafficCounter.resp_body = bodyBytes
+				ctx.TrafficCounter.UpdateRespSum()
 				ctx.TrafficCounter.UpdateTotal()
 				ctx.Log_P("[流量统计] 上行: %d (header:%d body:%d) | 下行: %d (header:%d body:%d) | 总计: %d | %s | %s | %s",
 					ctx.TrafficCounter.req_sum, ctx.TrafficCounter.req_header, ctx.TrafficCounter.req_body,
@@ -88,3 +93,37 @@ func PrintRespHeader(proxy *CoreHttpServer) {
 		return resp
 	})
 }
+
+var httpDomains = map[string]bool{
+    "example.com": true,
+}
+func StatusChange(proxy *CoreHttpServer) {
+	proxy.HookOnReq().DoConnectFunc(func(host string, ctx *Pcontext) (*ConnectAction, string) {
+		hostname := host
+		if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
+			hostname = host[:colonIdx]
+		}
+		
+		// 1. 域名白名单判断
+		if httpDomains[hostname] {
+			return HTTPMitmConnect, host
+		}
+		
+		// 2. 端口判断
+		if strings.HasSuffix(host, ":80") {
+			return HTTPMitmConnect, host
+		}
+		
+		// 3. 默认情况
+		return OkConnect, host
+	})
+}
+
+func MitmMode(proxy *CoreHttpServer) {
+	proxy.HookOnReq().DoConnectFunc(func(host string, ctx *Pcontext) (*ConnectAction, string){
+		return MitmConnect, host
+	})
+}
+
+
+

@@ -7,7 +7,7 @@ import(
 	"strings"
 )
 
-func (proxy *CoreHttpServer) MyHttpHandler(w http.ResponseWriter, r *http.Request){
+func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request){
 	var err error 
 	var oriBody io.ReadCloser
 
@@ -71,7 +71,6 @@ func (proxy *CoreHttpServer) MyHttpHandler(w http.ResponseWriter, r *http.Reques
 	// 处理sse和chunker连接。sse每个事件需要立即发送，不能缓冲。chunker数据分块发送，每块立即传输不能缓冲。
 	if strings.HasPrefix(w.Header().Get("content-type"), "text/event-stream") ||
 		strings.Contains(w.Header().Get("transfer-encoding"), "chunked") {
-		// server-side events, flush the buffered data to the client.
 		
 		bodyWriter = &flushWriter{w: w}
 	}

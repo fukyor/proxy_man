@@ -9,6 +9,7 @@ import (
 type TrafficCounter struct {
 	io.ReadCloser        // 嵌入原始 Body
 	resp_header int64	// remote->proxy的头部总大小
+	resp_body int64		
 	req_header int64	// client->proxy头部总大小
 	req_body int64		// client->proxy body总大小
 	req_sum int64		// 等于 req_header+req_body
@@ -36,6 +37,10 @@ func (c *TrafficCounter) UpdateReqSum() {
 	c.req_sum = c.req_header + c.req_body
 }
 
+func (c *TrafficCounter) UpdateRespSum() {
+	c.resp_sum = c.resp_header + c.resp_body
+}
+
 func (c *TrafficCounter) UpdateTotal(){
 	c.total = c.req_sum + c.resp_sum
 }
@@ -50,6 +55,8 @@ func (c *TrafficCounter) Close() error{
 	// 在关闭流时触发回调，上报总流量
 	if c.onClose != nil {
 		c.onClose(c.resp_sum)
+		c.onClose = nil
+
 	}
 	return c.ReadCloser.Close()
 }
