@@ -119,11 +119,25 @@ func StatusChange(proxy *CoreHttpServer) {
 	})
 }
 
-func MitmMode(proxy *CoreHttpServer) {
+func HttpsMitmMode(proxy *CoreHttpServer) {
 	proxy.HookOnReq().DoConnectFunc(func(host string, ctx *Pcontext) (*ConnectAction, string){
 		return MitmConnect, host
 	})
 }
+
+func HttpMitmMode(proxy *CoreHttpServer) {
+	proxy.HookOnReq().DoConnectFunc(func(host string, ctx *Pcontext) (*ConnectAction, string){
+		return HTTPMitmConnect, host
+	})
+}
+
+func TunnelMode(proxy *CoreHttpServer) {
+	proxy.HookOnReq().DoConnectFunc(func(host string, ctx *Pcontext) (*ConnectAction, string){
+		return OkConnect, host
+	})
+}
+ 
+
 
 
 

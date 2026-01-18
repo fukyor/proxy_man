@@ -67,7 +67,7 @@ func buildHeaders(dst, src http.Header, keepDestHeaders bool) {
 
 // 移除代理头部
 func RemoveProxyHeaders(ctx *Pcontext, r *http.Request) {
-	r.RequestURI = "" // 由http.roundtrip根据r.Url自动填充
+	r.RequestURI = "" // RequestURI是服务器字段，proxy作为客户端发送需要清空，由http.roundtrip根据r.Url自动填充
 	ctx.Log_P("Sending request %v %v", r.Method, r.URL.String())
 	if !ctx.core_proxy.KeepAcceptEncoding { 
 		r.Header.Del("Accept-Encoding")
