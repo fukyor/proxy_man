@@ -54,8 +54,8 @@ func (r *RequestReader) ReadRequest() (*http.Request, error) {
 		return http.ReadRequest(r.reader)
 	}
 
-	// 先把socket数据读到缓冲区并解析。Buffered记录剩余缓冲区未解析字节数
-	// 并用标准库头部解析为request结构体。
+	// 用标准库完整解析原始套接字中收到的二进制流中的头部为request结构体。（注意是只解析了头部）
+	// 如果自己解析就是proxylab里面的按照/r/n按行解析，容易在复杂网络环境下出错，所以用标准库
 	req, err := http.ReadRequest(r.reader)
 	if err != nil {
 		return nil, err
@@ -84,9 +84,29 @@ func (r *RequestReader) ReadRequest() (*http.Request, error) {
 	return req, nil
 }
 
+
+/*
+[-------------------- cloned维护的buffer (bytes.Buffer) (500字节) -------------]
+[  待读取数据 .................................................................]
+^
+0 (cloned 的当前指针,)
+
+|_____________________________________________________________________________|
+                   这个区间长度就是 cloned.Len() = 500
+
+
+[-------------------- bufio.Reader 维护的 Buffer (500字节) --------------------]
+[  已读取数据 (100)  ] [              未读取数据 (400)                     		]
+^                    ^                                                   	 ^
+0 (起始)             R (当前读取指针)                                        W (结束)
+
+                     |________________________________________________________|
+                                这个区间长度就是 r.Buffered() = 400
+*/
+// r.buf和clone.buf数据是一样的。但是里面既包含了reqheader也包含了reqbody
+// 所以我们要准确的把头部获取到，而不应该误读body
+// 我们最后就是得到已读的100字节，这是clone中保存的原始请求头副本
 func getRequestReader(r *bufio.Reader, cloned *bytes.Buffer) *textproto.Reader {
-
-
 	data := cloned.Next(cloned.Len() - r.Buffered())
 	return &textproto.Reader{
 		R: bufio.NewReader(bytes.NewReader(data)),

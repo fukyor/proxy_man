@@ -27,12 +27,14 @@ func newTunnelTrafficClient(conn net.Conn) (*tunnelTrafficClient, bool) {
 func (r *tunnelTrafficClient) Read(p []byte) (n int, err error) {
 	n, err = r.halfClosable.Read(p)
 	r.nread += int64(n)
+	GlobalTrafficUp.Add(int64(n)) // 客户端连接读取，Read = 上行流量
 	return n, err
 }
 
 func (w *tunnelTrafficClient) Write(p []byte) (n int, err error) {
 	n, err = w.halfClosable.Write(p)
 	w.nwrite += int64(n)
+	GlobalTrafficDown.Add(int64(n)) // 客户端连接响应，write = 下行流量
 	return n, err
 }
 
@@ -42,21 +44,6 @@ func (c *tunnelTrafficClient) Close() error {
 	return c.halfClosable.Close()
 }
 
-// type tunnelTrafficTarget struct {
-// 	halfClosable
-// 	nwrite int64
-// }
-
-// func newTunnelTrafficTarget(conn net.Conn) (*tunnelTrafficTarget, bool) {
-// 	if clientWriter, ok := conn.(halfClosable); ok {
-// 		return &tunnelTrafficTarget{
-// 			halfClosable: clientWriter,	
-// 			nwrite: 0,
-// 		}, true
-// 	}else{
-// 		return nil, false
-// 	}
-// }
 
 
 type tunnelTrafficClientNoClosable struct {
@@ -77,12 +64,14 @@ func newtunnelTrafficClientNoClosable(conn net.Conn) (*tunnelTrafficClientNoClos
 func (r *tunnelTrafficClientNoClosable) Read(p []byte) (n int, err error) {
 	n, err = r.conn.Read(p)
 	r.nread += int64(n)
+	GlobalTrafficUp.Add(int64(n)) // 客户端连接读取，Read = 上行流量
 	return n, err
 }
 
 func (w *tunnelTrafficClientNoClosable) Write(p []byte) (n int, err error) {
 	n, err = w.conn.Write(p)
 	w.nwrite += int64(n)
+	GlobalTrafficDown.Add(int64(n)) // 客户端连接响应，write = 下行流量
 	return n, err
 }
 

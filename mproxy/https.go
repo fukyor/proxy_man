@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type ConnectActionSelecter int
@@ -185,7 +187,7 @@ func copyOrWarn(ctx *Pcontext, dst io.Writer, src io.Reader) error {
 }
 
 func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Request) {
-	// 只是为了统计connect的session号
+	// 统计connect的session号，是最基础的tcp连接，所有数据都通过该隧道
 	ctxt := &Pcontext{
 		core_proxy:     proxy,
 		Req:            r,
@@ -249,13 +251,30 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			tunnelTrafficClientNoClosable: connClient,
 			Session: ctxt.Session,
 		}
-		// 使用闭包捕获 Counter_Ctxt，访问其流量数据
+
+		// 注册连接（隧道模式作为整体长连接）
+		proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
+			Session:     ctxt.Session,
+			Host:        host,
+			Method:      "TUNNEL",
+			URL:         host,
+			RemoteAddr:  r.RemoteAddr,
+			Protocol:    "HTTPS-Tunnel",
+			StartTime:   time.Now(),
+			UploadRef:   &proxyClientTCP.nread,   // nread = 从客户端读 = Upload
+			DownloadRef: &proxyClientTCP.nwrite,  // nwrite = 写给客户端 = Download
+			OnClose:     func() { connFromClinet.Close() },
+		})
+
+		// 使用闭包(捕获了外部变量的匿名函数)捕获 Counter_Ctxt，访问其流量数据
 		proxyClientTCP.onUpdate = func() {
 			Counter_Ctxt.Log_P("[流量统计] 上行: %d | 下行: %d | 总计: %d ",
 				Counter_Ctxt.tunnelTrafficClient.nread,
 				Counter_Ctxt.tunnelTrafficClient.nwrite,
 				Counter_Ctxt.tunnelTrafficClient.nread + Counter_Ctxt.tunnelTrafficClient.nwrite,
 				)
+			// 在连接关闭时注销
+			proxy.Connections.Delete(ctxt.Session)
 		}
 
 		targetTCP, targetOK := connRemoteSite.(halfClosable)
@@ -322,6 +341,10 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				return
 			}
+			requestContext, finishRequest := context.WithCancel(req.Context())
+			req = req.WithContext(requestContext)
+			defer finishRequest()
+
 			requestOk := func(req *http.Request) bool {
 				ctxt := &Pcontext{
 					core_proxy:     proxy,
@@ -329,6 +352,22 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					TrafficCounter: &TrafficCounter{}, // 创建独立计数器
 					Session:        atomic.AddInt64(&proxy.sess, 1),
 				}
+
+				// 注册连接
+				proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
+					Session:     ctxt.Session,
+					Host:        r.Host,
+					Method:      req.Method,
+					URL:         req.URL.String(),
+					RemoteAddr:  r.RemoteAddr,
+					Protocol:    "HTTP-MITM",
+					StartTime:   time.Now(),
+					UploadRef:   &ctxt.TrafficCounter.req_body,
+					DownloadRef: &ctxt.TrafficCounter.resp_body,
+					OnClose:     func() { finishRequest() },
+				})
+				defer proxy.Connections.Delete(ctxt.Session) // 在请求完成后注销
+
 				// 模仿标准库为request绑定上下文
 				requestContext, CancelR := context.WithCancel(req.Context())
 				req = req.WithContext(requestContext)
@@ -374,6 +413,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				resp = proxy.filterResponse(resp, ctxt)
 				defer resp.Body.Close()
 
+				resp.Header.Set("Connection", "close")
 				// 使用 httputil.DumpResponse 获取完整头部（包含状态行）
 				headerBytes, err := httputil.DumpResponse(resp, false)
 				if err != nil {
@@ -407,7 +447,8 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 							return false
 						}
 					} else {
-						// io.copy的退出取决于参数接口的行为，如果参数是net.Conn接口，会一直保持到tcp断开，因为net.Conn的底层行为是和tcp socket的生命周期一致，
+						// io.copy的退出取决于参数接口的行为，如果参数是net.Conn接口，会一直保持到tcp断开，
+						// 因为net.Conn的底层行为是收到scoket EOF后再退出
 						// 这里参数是req.Body / resp.Body会在读到Content-Length / Chunk结束符退出。
 						if _, err := io.Copy(connFromClinet, resp.Body); err != nil {
 							ctxt.WarnP("httpMItm Cannot write HTTP response body: %v", err)
@@ -477,11 +518,26 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					requestContext, finishRequest := context.WithCancel(req.Context())
 					req = req.WithContext(requestContext)
 					defer finishRequest()
+					// 注册连接
+					proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
+						Session:     ctxt.Session,
+						Host:        r.Host,
+						Method:      req.Method,
+						URL:         req.URL.String(),
+						RemoteAddr:  r.RemoteAddr,
+						Protocol:    "HTTPS-MITM",
+						StartTime:   time.Now(),
+						UploadRef:   &ctxt.TrafficCounter.req_body,
+						DownloadRef: &ctxt.TrafficCounter.resp_body,
+						OnClose:     func() { finishRequest() },
+					})
+					defer proxy.Connections.Delete(ctxt.Session) // 在请求完成后注销
 
 					ctxt.Req = req
 
 					// https已经解析成功，我们可以查看请求
 					req, resp := proxy.filterRequest(req, ctxt)
+					log.Printf("google请求头已解析")
 					if resp == nil {
 						if err != nil {
 							if req.URL != nil {
@@ -491,9 +547,9 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 							}
 							return false
 						}
-						if !proxy.KeepHeader {
-							RemoveProxyHeaders(ctxt, req)
-						}
+						
+						RemoveProxyHeaders(ctxt, req)
+
 						resp, err = func() (*http.Response, error) {
 							// 关闭req的读取器很重要，因为req上传文件时，是需要从body中流式读取的，并不是都从map中读取。关闭后避免roundtrip数据竞争
 							defer req.Body.Close()
@@ -527,7 +583,9 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 						resp.Header.Set("Transfer-Encoding", "chunked")
 					}
 					// Force connection close otherwise chrome will keep CONNECT tunnel open forever
-					// 非websocket强制静止连接复用，向client发送connection: close
+					// 之所以需要主动发送close的原因是proxy到target的隧道关闭后，这里proxy是不会通知client的。两个方向
+					// 完全解耦，导致proxy完全依赖于client的EOF关闭tcp，所以为了避免client一直不关闭tcp，proxy的方案就
+					// 是主动告诉客户端 connection：close
 					if !isWebsocket {
 						resp.Header.Set("Connection", "close")
 					}
@@ -610,7 +668,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				}
 			}
 			// 正常退出，收到client EOF
-			ctxt.Log_P("Exiting on EOF")
+			ctxt.Log_P("Normal Exiting on EOF")
 		}()
 	}
 }

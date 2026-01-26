@@ -5,11 +5,17 @@ import(
 	"net/http"
 	"sync/atomic"
 	"strings"
+	"time"
+	"context"
 )
 
 func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request){
 	var err error 
 	var oriBody io.ReadCloser
+
+	ctx, cancel := context.WithCancel(r.Context())
+	r = r.WithContext(ctx)
+	defer cancel() // 确保函数退出时清理 Context，避免内存泄露，context本质也是通道占用内存
 
 	ctxt := &Pcontext{
 		core_proxy: proxy,
@@ -17,10 +23,24 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		TrafficCounter: &TrafficCounter{},
 		Session: atomic.AddInt64(&proxy.sess, 1),
 	}
-	
+
+	// 注册连接
+	proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
+		Session:     ctxt.Session,
+		Host:        r.Host,
+		Method:      r.Method,
+		URL:         r.URL.String(),
+		RemoteAddr:  r.RemoteAddr,
+		Protocol:    "HTTP",
+		StartTime:   time.Now(),
+		UploadRef:   &ctxt.TrafficCounter.req_body,
+		DownloadRef: &ctxt.TrafficCounter.resp_body,
+		OnClose:     func() { cancel() },
+	})
+
 	if !r.URL.IsAbs(){
 		proxy.DirectHandler.ServeHTTP(w, r)
-		return	
+		return
 	}
 
 	r, resp := proxy.filterRequest(r, ctxt)
@@ -43,6 +63,19 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 
 	resp = proxy.filterResponse(resp, ctxt)
 
+	// 在流量统计关闭回调中注销（确保流量统计完成后再删除）
+	if resp != nil && resp.Body != nil {
+		if rBReader, ok := resp.Body.(*respBodyReader); ok {
+			originalOnClose := rBReader.onClose
+			rBReader.onClose = func() {
+				if originalOnClose != nil {
+					originalOnClose()
+				}
+				proxy.Connections.Delete(ctxt.Session)
+			}
+		}
+	}
+
 	if resp == nil{
 		var errorString string
 		if ctxt.Error != nil {
@@ -54,16 +87,16 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 			ctxt.Log_P(errorString)
 			http.Error(w, errorString, http.StatusInternalServerError)
 		}
+		proxy.Connections.Delete(ctxt.Session) // 如果响应为空，也需要注销连接
 		return  // hanler函数结束后，go会自动释放连接
 	}
-	//ctxt.Log_P("Copying response to client %v [%d]", resp.Status, resp.StatusCode)
 
-	//不用担心Content-Length被删除的问题，会自动降级为chunked模式，
+	//不用担心Content-Length被删除的问题，会自动降级为chunked模式，go服务器自动处理chunked传输
 	if oriBody != resp.Body {
 		resp.Header.Del("Content-Length")
 	}
 	// 封装响应头
-	buildHeaders(w.Header(), resp.Header, proxy.KeepCurHeaders)
+	buildHeaders(w.Header(), resp.Header, proxy.KeepDestHeaders)
 	w.WriteHeader(resp.StatusCode)
 
 	var bodyWriter io.Writer = w
@@ -82,7 +115,6 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 	if err := resp.Body.Close(); err != nil {  
 		ctxt.WarnP("Can't close response body %v", err)
 	}
-	//ctxt.Log_P("Copied %v bytes to client error=%v", nr, err)
 
 
 }

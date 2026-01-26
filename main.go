@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 	"proxy_man/mproxy"
-	"net/http/httptrace"
+	"proxy_man/proxysocket"
 	// "net/http/httputil"
 	// "fmt"
 )
@@ -17,31 +17,24 @@ func main() {
 	proxy := mproxy.NewCoreHttpSever()
 	proxy.Verbose = *verbose
 	proxy.AllowHTTP2 = false
-	proxy.KeepHeader = false  // 不保留代理头部
-	mproxy.PrintReqHeader(proxy)
-	mproxy.PrintRespHeader(proxy)
+	proxy.PreventParseHeader = false
+	proxy.KeepDestHeaders = false
+
+	// 使用 LogCollector 包装原有 Logger
+	proxy.Logger = mproxy.NewLogCollector(proxy.Logger)
+
+	// mproxy.PrintReqHeader(proxy)
+	// mproxy.PrintRespHeader(proxy)
 	mproxy.AddTrafficMonitor(proxy)
 	//mproxy.StatusChange(proxy)
-	mproxy.HttpMitmMode(proxy)
-	//mproxy.HttpsMitmMode(proxy)
+	//mproxy.HttpMitmMode(proxy)
+	mproxy.HttpsMitmMode(proxy)
 
-	// 注册一个请求钩子来注入 httptrace
-    proxy.HookOnReq().DoFunc(func(req *http.Request, ctx *mproxy.Pcontext) (*http.Request, *http.Response) {
-        // 定义 Trace 钩子
-        trace := &httptrace.ClientTrace{
-            // 当成功获取到连接时（无论是新建还是复用）调用
-            GotConn: func(connInfo httptrace.GotConnInfo) {
-                remoteAddr := connInfo.Conn.RemoteAddr()
-                if connInfo.Reused {
-                    ctx.Log_P("[RoundTrip] 复用连接 IP: %s", remoteAddr)
-                } else {
-                    ctx.Log_P("[RoundTrip] 新建连接 IP: %s", remoteAddr)
-                }
-            },
-        }
-        ctxTrace := httptrace.WithClientTrace(req.Context(), trace)
-        return req.WithContext(ctxTrace), nil
-    })
+
+	// 启动 WebSocket 控制服务
+	if !proxysocket.StartControlServer(proxy, ":8000", "123") {
+		log.Fatal("websocket server启动失败")
+	}
 
 	s := http.Server{
 		Addr: *addr,
@@ -50,5 +43,5 @@ func main() {
 	if err := s.ListenAndServe(); err != nil{
 		log.Fatal("服务器错误", err)
 	}
-	
+
 }
