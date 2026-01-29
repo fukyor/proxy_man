@@ -17,6 +17,8 @@ type Pcontext struct{
 	certStore CertStorage
 	Error error
 	Session int64
+
+	parCtx *Pcontext // 顶层隧道流量统计，通过保存父上下文，确保父隧道能够正确统计请求头	
 	TrafficCounter *TrafficCounter // http和mitm流量统计
 	tunnelTrafficClient	 *tunnelTrafficClient //加密tunnel流量统计
 	tunnelTrafficClientNoClosable *tunnelTrafficClientNoClosable // 加密tunnel流量统计

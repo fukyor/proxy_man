@@ -41,12 +41,18 @@ type WebSocketHub struct {
 
 var hub *WebSocketHub
 
-// 启动控制服务器
-func StartControlServer(proxy *mproxy.CoreHttpServer, addr string, secret string) bool {
-	hub = &WebSocketHub{proxy: proxy}
+type WebsocketServer struct {
+	Proxy *mproxy.CoreHttpServer
+	Addr string
+	Secret string
+}
 
+
+// 启动控制服务器
+func (ws *WebsocketServer) StartControlServer() bool {
+	hub = &WebSocketHub{proxy: ws.Proxy}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/start", loginHandler(secret, handleWebSocket))
+	mux.HandleFunc("/start", ws.loginHandler(ws.handleWebSocket))
 
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -62,7 +68,7 @@ func StartControlServer(proxy *mproxy.CoreHttpServer, addr string, secret string
 
 	var err error
 	go func(){
-		err = http.ListenAndServe(addr, corsMiddleware.Handler(mux))
+		err = http.ListenAndServe(ws.Addr, corsMiddleware.Handler(mux))
 	}()
 	// 通道有两种架构，非阻塞和阻塞通道，这里需要阻塞通道
 	if err != nil {
@@ -72,11 +78,11 @@ func StartControlServer(proxy *mproxy.CoreHttpServer, addr string, secret string
 	return true
 }
 
-func loginHandler(secret string, next http.HandlerFunc) http.HandlerFunc {
+func (ws *WebsocketServer) loginHandler(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if secret != "" {
+		if ws.Secret != "" {
 			token := r.URL.Query().Get("token")
-			if token != secret {
+			if token != ws.Secret {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -85,7 +91,7 @@ func loginHandler(secret string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		var handshakeErr websocket.HandshakeError
@@ -122,7 +128,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if info, ok := value.(*mproxy.ConnectionInfo); ok && info.OnClose != nil {
 					info.OnClose()
 				}
-				hub.proxy.Connections.Delete(key)
+				ws.Proxy.MarkConnectionClosed(key.(int64))
 				return true
 			})
 		}

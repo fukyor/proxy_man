@@ -9,7 +9,7 @@ type tunnelTrafficClient struct {
 	halfClosable
 	nread int64
 	nwrite int64
-	onUpdate func()
+	onClose func()
 }
 
 func newTunnelTrafficClient(conn net.Conn) (*tunnelTrafficClient, bool) {
@@ -39,8 +39,10 @@ func (w *tunnelTrafficClient) Write(p []byte) (n int, err error) {
 }
 
 func (c *tunnelTrafficClient) Close() error {
-	c.onUpdate()
-	c.onUpdate = nil
+	if c.onClose != nil {
+		c.onClose()
+	}
+	c.onClose = nil
 	return c.halfClosable.Close()
 }
 
@@ -50,7 +52,7 @@ type tunnelTrafficClientNoClosable struct {
 	conn net.Conn
 	nread int64
 	nwrite int64
-	onUpdate func()
+	onClose func()
 }
 
 func newtunnelTrafficClientNoClosable(conn net.Conn) (*tunnelTrafficClientNoClosable){
@@ -76,41 +78,12 @@ func (w *tunnelTrafficClientNoClosable) Write(p []byte) (n int, err error) {
 }
 
 func (c *tunnelTrafficClientNoClosable) Close() error {
-	c.onUpdate()
-	c.onUpdate = nil
+	if c.onClose != nil {
+		c.onClose()
+	}
+	c.onClose = nil
 	return c.conn.Close()
 }
-
-
-
-// type tunnelTrafficTargetNoClosable struct {
-// 	conn net.Conn
-// 	nwrite int64
-// }
-
-// func newtunnelTrafficTargetNoClosable(conn net.Conn) (*tunnelTrafficTargetNoClosable){
-// 	return &tunnelTrafficTargetNoClosable{
-// 		conn: conn,
-// 		nwrite: 0,
-// 	}
-// }
-
-// func (r *tunnelTrafficTargetNoClosable) Read(p []byte) (n int, err error) {
-// 	n, err = r.conn.Read(p)
-// 	return n, err
-// }
-
-// func (w *tunnelTrafficTargetNoClosable) Write(p []byte) (n int, err error) {
-// 	n, err = w.conn.Write(p)
-// 	w.nwrite += int64(n)
-// 	return n, err
-// }
-
-// func (c *tunnelTrafficTargetNoClosable) Close() error {
-// 	return c.conn.Close()
-// }
-
-
 
 
 

@@ -21,7 +21,7 @@ type CoreHttpServer struct{
 	DirectHandler http.Handler
 	reqHandlers []ReqHandler    // 封装请求过滤器
 	respHandlers []RespHandler	// 封装响应过滤器
-	httpsHandlers []HttpsHandler
+	httpsHandlers []HttpsHandler // 连接策略选择器
 	ConnectMutiDial        func(network string, addr string) (net.Conn, error) // 多级代理
 	ConnectWithReqDial func(req *http.Request, network string, addr string) (net.Conn, error) // 分流规则
 
@@ -33,8 +33,9 @@ type CoreHttpServer struct{
 
 	AllowHTTP2 bool
 	PreventParseHeader bool // 是否保使用用户的非标头部，默认false。除了RPC，一般不会需要非标头部
-	KeepDestHeaders bool  	// 是否保留已设置的响应头，默认fase。我们通常没有自己设置响应头，都是使用resp响应头
-	KeepAcceptEncoding bool
+	KeepDestHeaders bool  	// 是否保留已设置的响应头，默认false。我们通常没有自己设置响应头，都是使用resp响应头
+	KeepAcceptEncoding bool	// 保留用户请求编码格式，默认false。除非必须要特定编码格式，否则保持为false让roundtrip决定。
+	ConnectMaintain bool 	// 是否持久维持隧道，默认false。客户端如果支持主动断开连接，则可以为ture
 
 	Connections sync.Map // int64 (Session) -> *ConnectionInfo
 }

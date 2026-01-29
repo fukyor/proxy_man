@@ -17,8 +17,10 @@ func main() {
 	proxy := mproxy.NewCoreHttpSever()
 	proxy.Verbose = *verbose
 	proxy.AllowHTTP2 = false
+	proxy.KeepAcceptEncoding = false
 	proxy.PreventParseHeader = false
 	proxy.KeepDestHeaders = false
+	proxy.ConnectMaintain = false
 
 	// 使用 LogCollector 包装原有 Logger
 	proxy.Logger = mproxy.NewLogCollector(proxy.Logger)
@@ -27,12 +29,17 @@ func main() {
 	// mproxy.PrintRespHeader(proxy)
 	mproxy.AddTrafficMonitor(proxy)
 	//mproxy.StatusChange(proxy)
-	//mproxy.HttpMitmMode(proxy)
-	mproxy.HttpsMitmMode(proxy)
+	mproxy.HttpMitmMode(proxy)
+	//mproxy.HttpsMitmMode(proxy)
 
 
 	// 启动 WebSocket 控制服务
-	if !proxysocket.StartControlServer(proxy, ":8000", "123") {
+	ws := &proxysocket.WebsocketServer{
+		Proxy: proxy,
+		Addr: ":8000",
+		Secret: "123",	
+	}
+	if !ws.StartControlServer() {
 		log.Fatal("websocket server启动失败")
 	}
 
