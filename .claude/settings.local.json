@@ -18,11 +18,17 @@
       "mcp__chrome-devtools__list_network_requests",
       "mcp__chrome-devtools__get_network_request",
       "mcp__chrome-devtools__press_key",
-      "mcp__chrome-devtools__evaluate_script"
+      "mcp__chrome-devtools__evaluate_script",
+      "Bash(wc:*)",
+      "Read(test/gotest/**)",
+      "Read(test/backend_server.go)",
+      "Bash(ls -la \"E:\\\\D\\\\zuoyewenjian\\\\MyProject\\\\proxy_man\\\\test\"\" 2>nul || echo \"test directory not found or empty \")",
+      "Bash(ls -la \"E:\\\\D\\\\zuoyewenjian\\\\MyProject\\\\proxy_man\\\\myminio\"\" 2>nul || echo \"myminio directory not found \")",
+      "Bash(findstr:*)",
+      "Bash(go vet:*)",
+      "Bash(go test:*)"
     ],
-    "deny": [
-      "Read(/test1.go)"
-    ],
+    "deny": [],
     "ask": []
   },
   "alwaysThinkingEnabled": true

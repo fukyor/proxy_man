@@ -1,9 +1,10 @@
 package proxysocket
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
-	// "log"
+	//"log"
 	"github.com/gorilla/websocket"
 	"proxy_man/mproxy"
 )
@@ -14,6 +15,7 @@ func (h *WebSocketHub) updateSubscription(sub *Subscription, msg map[string]any)
 		sub.Traffic = contains(topics, "traffic")
 		sub.Connections = contains(topics, "connections")
 		sub.Logs = contains(topics, "logs")
+		sub.MitmDetail = contains(topics, "mitm_detail")
 	}
 	if logLevel, ok := msg["logLevel"].(string); ok {
 		sub.LogLevel = logLevel
@@ -34,9 +36,21 @@ func contains(slice []any, item string) bool {
 func (h *WebSocketHub) sendTo(conn *websocket.Conn, sub *Subscription, msg any) {
 	sub.writeMu.Lock()
 	defer sub.writeMu.Unlock()
-	data, _ := json.Marshal(msg)
-	//log.Printf("%v", string(data))
-	conn.WriteMessage(websocket.TextMessage, data)
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(msg); err != nil {
+		return
+	}
+
+	// 	// 判断是否是流量推送消息并打印调试
+	// if msgMap, ok := msg.(map[string]any); ok {
+	// 	if msgType, exists := msgMap["type"]; exists && msgType == "traffic" {
+	// 		log.Printf("[Traffic] %v", buf.String())
+	// 	}
+	// }
+	conn.WriteMessage(websocket.TextMessage, buf.Bytes())
 }
 
 // 广播到订阅指定主题的客户端
@@ -52,6 +66,8 @@ func (h *WebSocketHub) broadcastToTopic(topic string, msg any) {
 			shouldSend = sub.Traffic
 		case "connections":
 			shouldSend = sub.Connections
+		case "mitm_detail":
+			shouldSend = sub.MitmDetail
 		}
 
 		if shouldSend {
@@ -80,7 +96,12 @@ func (h *WebSocketHub) StartTrafficPusher() {
 
 			h.broadcastToTopic("traffic", map[string]any{
 				"type": "traffic",
-				"data": map[string]int64{"up": deltaUp, "down": deltaDown},
+				"data": map[string]int64{
+					"up":        deltaUp,
+					"down":      deltaDown,
+					"totalUp":   currentUp,
+					"totalDown": currentDown,
+				},
 			})
 		}
 	}()
@@ -172,4 +193,16 @@ var logLevels = map[string]int{"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
 
 func shouldSendLog(msgLevel, clientLevel string) bool {
 	return logLevels[msgLevel] >= logLevels[clientLevel]
+}
+
+// MITM Exchange 详细信息推送器（实时推送）
+func (h *WebSocketHub) StartMitmDetailPusher() {
+	go func() {
+		for exchange := range mproxy.GlobalExchangeChan {
+			h.broadcastToTopic("mitm_detail", map[string]any{
+				"type": "mitm_exchange",
+				"data": exchange,
+			})
+		}
+	}()
 }

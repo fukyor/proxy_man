@@ -9,8 +9,8 @@
 				"build",
 				"-gcflags=all=-N -l",
 				"-o",
-				"./use_demo/filter/test_bin",
-				"./use_demo/filter/main.go"
+				"test_bin",
+				"."
 			],
 			"group": "build",
 			"problemMatcher": [

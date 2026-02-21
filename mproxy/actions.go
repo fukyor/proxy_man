@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httputil"
+	"proxy_man/myminio"
 	"strings"
 )
 
@@ -17,19 +18,36 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		// 记录请求头大小
 		ctx.TrafficCounter.req_header = GetHeaderSize(req, ctx)
 		ctx.TrafficCounter.req_sum = ctx.TrafficCounter.req_header
-		ctx.parCtx.TrafficCounter.req_sum += ctx.TrafficCounter.req_header
+
+		var parentCounter *TrafficCounter
+		if ctx.parCtx != nil {
+			ctx.parCtx.TrafficCounter.req_sum += ctx.TrafficCounter.req_header
+			parentCounter = ctx.parCtx.TrafficCounter
+		}
+
 		GlobalTrafficUp.Add(ctx.TrafficCounter.req_header)
+
 		// 如果有请求体，包装它
 		if req.Body != nil {
 			// roundripe自动调用req.Body.read读取body
 			// roundripe从req的map中读取header
-			req.Body = &reqBodyReader{
-					ReadCloser: req.Body,
-					counter:    ctx.TrafficCounter,
-					Pcounter:	ctx.parCtx.TrafficCounter,
-					onClose:    nil,
-				}
+
+			// 第一层：流量统计
+			trafficReader := &reqBodyReader{
+				ReadCloser: req.Body,
+				counter:    ctx.TrafficCounter,
+				Pcounter:   parentCounter,
+				onClose:    nil,
 			}
+
+			// 第二层：MinIO 捕获（包装流量统计层）
+			contentType := req.Header.Get("Content-Type")
+			captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+			if ctx.exchangeCapture != nil {
+				ctx.exchangeCapture.reqBodyCapture = captReader.Capture
+			}
+			req.Body = captReader
+		}
 		return req, nil
 	})
 
@@ -42,35 +60,66 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		// 记录响应头大小
 		ctx.TrafficCounter.resp_header = GetHeaderSize(resp, ctx)
 		ctx.TrafficCounter.resp_sum = ctx.TrafficCounter.resp_header         // 子连接统计请求头大小
-		ctx.parCtx.TrafficCounter.resp_sum += ctx.TrafficCounter.resp_header // 父隧道统计请求头大小
+
+		var parentCounter *TrafficCounter
+		if ctx.parCtx != nil {
+			ctx.parCtx.TrafficCounter.resp_sum += ctx.TrafficCounter.resp_header // 父隧道统计请求头大小
+			parentCounter = ctx.parCtx.TrafficCounter
+		}
+
 		GlobalTrafficDown.Add(ctx.TrafficCounter.resp_header)
 
 		if resp.Body == nil {
 			ctx.TrafficCounter.UpdateTotal()
-			ctx.parCtx.TrafficCounter.UpdateTotal()
-			ctx.Log_P("[流量统计] 本次连接上行: %d (header:%d body:%d) | 本次连接下行: %d (header:%d body:0) | 本次连接总计: %d | 隧道总上行: %d | 隧道总下行: %d | 隧道流量总计: %d |  %s | %s | %s",
+			var pReqSum, pRespSum, pTotal int64
+			if ctx.parCtx != nil {
+				ctx.parCtx.TrafficCounter.UpdateTotal()
+				pReqSum = ctx.parCtx.TrafficCounter.req_sum
+				pRespSum = ctx.parCtx.TrafficCounter.resp_sum
+				pTotal = ctx.parCtx.TrafficCounter.total
+			}
+
+			ctx.Log_P("[流量统计] 本次连接上行: %d (header:%d body:%d) | 本次连接下行: %d (header:%d body:0) | 本次连接总计: %d | 隧道总上行: %d | 隧道总下行: %d | 隧道流量总计: %d |  %s | %s ",
 				ctx.TrafficCounter.req_sum, ctx.TrafficCounter.req_header, ctx.TrafficCounter.req_body,
 				ctx.TrafficCounter.resp_header, ctx.TrafficCounter.resp_header,ctx.TrafficCounter.total, 
-				ctx.parCtx.TrafficCounter.req_sum, ctx.parCtx.TrafficCounter.resp_sum, ctx.parCtx.TrafficCounter.total,
-				ctx.Req.Method, ctx.Req.URL.String(), "未响应")
+				pReqSum, pRespSum, pTotal,
+				ctx.Req.Method, ctx.Req.URL.String())
 			return resp
 		}
 
 		// 包装响应体
-		resp.Body = &respBodyReader{
-				ReadCloser: resp.Body,
-				counter:    ctx.TrafficCounter,
-				Pcounter:   ctx.parCtx.TrafficCounter,
-				onClose: func() {
-					ctx.TrafficCounter.UpdateTotal()
+		// 第一层：流量统计
+		trafficReader := &respBodyReader{
+			ReadCloser: resp.Body,
+			counter:    ctx.TrafficCounter,
+			Pcounter:   parentCounter,
+			onClose: func() {
+				ctx.TrafficCounter.UpdateTotal()
+				var pReqSum, pRespSum, pTotal int64
+				if ctx.parCtx != nil {
 					ctx.parCtx.TrafficCounter.UpdateTotal()
-					ctx.Log_P("[流量统计] 本次连接上行: %d (header:%d body:%d) | 本次连接下行: %d (header:%d body:%d) | 本次连接总计: %d | 隧道总上行: %d | 隧道总下行: %d | 隧道流量总计: %d | %s | %s | %s",
-						ctx.TrafficCounter.req_sum, ctx.TrafficCounter.req_header, ctx.TrafficCounter.req_body,
-						ctx.TrafficCounter.resp_sum, ctx.TrafficCounter.resp_header, ctx.TrafficCounter.resp_body,
-						ctx.TrafficCounter.total, ctx.parCtx.TrafficCounter.req_sum, ctx.parCtx.TrafficCounter.resp_sum,
-						ctx.parCtx.TrafficCounter.total, ctx.Req.Method, ctx.Req.URL.String(), resp.Status)
-				},
-			}
+					pReqSum = ctx.parCtx.TrafficCounter.req_sum
+					pRespSum = ctx.parCtx.TrafficCounter.resp_sum
+					pTotal = ctx.parCtx.TrafficCounter.total
+				}
+
+				ctx.Log_P("[流量统计] 本次连接上行: %d (header:%d body:%d) | 本次连接下行: %d (header:%d body:%d) | 本次连接总计: %d | 隧道总上行: %d | 隧道总下行: %d | 隧道流量总计: %d | %s | %s | %s",
+					ctx.TrafficCounter.req_sum, ctx.TrafficCounter.req_header, ctx.TrafficCounter.req_body,
+					ctx.TrafficCounter.resp_sum, ctx.TrafficCounter.resp_header, ctx.TrafficCounter.resp_body,
+					ctx.TrafficCounter.total, pReqSum, pRespSum,
+					pTotal, ctx.Req.Method, ctx.Req.URL.String(), resp.Status)
+
+				ctx.SendExchange() // 触发 MITM Exchange 发送
+			},
+		}
+
+		// 第二层：MinIO 捕获（包装流量统计层）
+		contentType := resp.Header.Get("Content-Type")
+		captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+		if ctx.exchangeCapture != nil {
+			ctx.exchangeCapture.respBodyCapture = captReader.Capture
+		}
+		resp.Body = captReader
 		return resp
 	})
 }

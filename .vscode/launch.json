@@ -6,12 +6,9 @@
             "type": "go",
             "request": "launch",
             "mode": "exec",
-            "program": "${workspaceFolder}/use_demo/filter/test_bin",
+            "program": "${workspaceFolder}/test_bin",
             "env": {},
             "args": [],
-            "showLog": false,        // 显示调试 log，但我们目前没必要看pc的位置
-            "trace": "error",     // 更详细的调试信息
-            "console": "integratedTerminal", // 使用集成终端，方便你输入命令
             "preLaunchTask": "go: build for debug", // 重点：必须和 tasks.json 里的 label 一模一样
         }
     ]

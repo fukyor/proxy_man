@@ -1,12 +1,13 @@
 package mproxy
 
-import(
+import (
+	"context"
 	"io"
 	"net/http"
-	"sync/atomic"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
-	"context"
 )
 
 func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request){
@@ -40,9 +41,10 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		StartTime:   time.Now(),
 		Status:      "Active",
 		UploadRef:   &ctxt.TrafficCounter.req_sum,
-		DownloadRef: &ctxt.TrafficCounter.req_sum,
+		DownloadRef: &ctxt.TrafficCounter.resp_sum,
 		OnClose:     func() { cancel() },
 	})
+	defer proxy.MarkConnectionClosed(ctxt.Session) // 函数退出时标记连接关闭
 
 	r, resp := proxy.filterRequest(r, ctxt)
 
@@ -64,17 +66,54 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 
 	resp = proxy.filterResponse(resp, ctxt)
 
-	// 在流量统计关闭回调中注销（确保流量统计完成后再删除）
-	if resp != nil && resp.Body != nil {
-		if rBReader, ok := resp.Body.(*respBodyReader); ok {
-			originalOnClose := rBReader.onClose
-			rBReader.onClose = func() {
-				if originalOnClose != nil {
-					originalOnClose()
-				}
-				proxy.MarkConnectionClosed(ctxt.Session)
-			}
+	// WebSocket 处理：必须在 filterResponse 之后检测（hook 可能修改 header），
+	// 但使用 oriBody 而非 resp.Body，因为 filterResponse 的包装器丢失了 Write 方法
+	isWebsocket := resp != nil && isWebSocketHandshake(resp.Header)
+	if isWebsocket {
+		ctxt.Log_P("检测到 HTTP WebSocket 握手响应")
+		ctxt.SetCaptureSkip()
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			ctxt.WarnP("ResponseWriter 不支持 Hijack，无法处理 WebSocket")
+			http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
+			return
 		}
+		clientConn, _, err := hj.Hijack()
+		if err != nil {
+			ctxt.WarnP("Hijack 失败: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer clientConn.Close()
+
+		// 手动写入 101 响应头（Hijack 后 w 不可用）
+		statusCode := strconv.Itoa(resp.StatusCode) + " "
+		text := strings.TrimPrefix(resp.Status, statusCode)
+		if _, err := io.WriteString(clientConn, "HTTP/1.1 "+statusCode+text+"\r\n"); err != nil {
+			ctxt.WarnP("写入 WebSocket 响应状态失败: %v", err)
+			return
+		}
+		if err := resp.Header.Write(clientConn); err != nil {
+			ctxt.WarnP("写入 WebSocket 响应头失败: %v", err)
+			return
+		}
+		if _, err := io.WriteString(clientConn, "\r\n"); err != nil {
+			ctxt.WarnP("写入响应头结束符失败: %v", err)
+			return
+		}
+
+		// 使用 oriBody（原始未包装的 resp.Body），它实现了 io.ReadWriter（Go 1.12+ 101 响应特性）
+		// resp.Body 经过 filterResponse 包装后丢失了 Write 方法，不可用
+		wsConn, ok := oriBody.(io.ReadWriter)
+		if !ok {
+			ctxt.WarnP("resp.Body 不支持 io.ReadWriter，无法建立 WebSocket")
+			return
+		}
+
+		ctxt.Log_P("开始 HTTP WebSocket 双向转发")
+		proxy.proxyWebsocket(ctxt, wsConn, clientConn)
+		return
 	}
 
 	if resp == nil{
@@ -88,7 +127,6 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 			ctxt.Log_P(errorString)
 			http.Error(w, errorString, http.StatusInternalServerError)
 		}
-		proxy.MarkConnectionClosed(ctxt.Session) // 如果响应为空，也需要注销连接
 		return  // hanler函数结束后，go会自动释放连接
 	}
 
@@ -97,6 +135,9 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		resp.Header.Del("Content-Length")
 	}
 	// 封装响应头
+	if !isWebsocket && !proxy.ConnectMaintain{
+		resp.Header.Set("Connection", "close")
+	}
 	buildHeaders(w.Header(), resp.Header, proxy.KeepDestHeaders)
 	w.WriteHeader(resp.StatusCode)
 

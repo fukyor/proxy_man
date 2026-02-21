@@ -1,127 +1,216 @@
-两个需求新的需求（层级显示连接、概览仅显示活跃连接）
-### 核心设计思路
+# ConnectHTTPMitm Expect: 100-continue 死锁修复计划
 
-目前的后端数据是“扁平化”的数组，通过 `parentId` 关联。为了实现 UI 上的父子折叠效果，前端需要在接收数据后进行**结构化转换**（Flat-to-Tree），而不应直接修改后端存储结构。
+## 问题总结
 
-#### 1. 数据结构设计 (ViewModel Layer)
+### 死锁场景
 
-我们需要在前端将接收到的扁平 `connections` 数组转换为以 `id` 为索引的树形结构或映射结构。
+当客户端使用 `Expect: 100-continue` 头上传大文件时，`req.Write()` 同步阻塞导致无法及时读取和转发 Target 的 `100 Continue` 响应。
 
-**原始数据 (Flat):**
+### 根本原因
 
-```json
-[
-  { "id": 1, "parentId": 0, ... },
-  { "id": 2, "parentId": 1, ... }
-]
+`mproxy/https.go:422-431` 的同步执行模式：
 
+```go
+// 1. req.Write() 同步发送整个请求（包括大文件 Body）
+if err := req.Write(connRemoteSite); err != nil { ... }
+
+// 2. 只有发送完成后才能读取响应
+resp, err = func() (*http.Response, error) {
+    defer req.Body.Close()
+    return http.ReadResponse(remote_res, req)
+}()
 ```
 
-**目标数据结构 (Tree/Grouped):**
-建议为每个父节点对象扩展两个属性：
+## 关键发现：req.Body.Close() 的阻塞风险
 
-1. `children`: 数组，存放所有 `parentId` 等于该节点 `id` 的子连接。
-2. `_expanded`: 布尔值，用于控制 UI 上的折叠/展开状态（UI 状态字段）。
+### Body 包装层次
 
-```javascript
-// 转换后的父节点对象示例
-{
-  "id": 1,
-  "parentId": 0,
-  "host": "baidu.com:443",
-  "children": [
-    {
-      "id": 2,
-      "parentId": 1,
-      "host": "baidu.com:443",
-      "protocol": "HTTPS-MITM",
-      // ... 子节点数据
+```
+原始 Body（来自客户端连接）
+    ↓
+reqBodyReader（流量统计层）  ← mproxy/https_traffic.go:26-46
+    ↓
+bodyCaptReader（MinIO 捕获层） ← myminio/minioUpload.go:24-31
+    ↓
+req.Body
+```
+
+### bodyCaptReader.Close() 的阻塞行为
+
+`myminio/minioUpload.go:172-186`:
+
+```go
+func (r *bodyCaptReader) Close() error {
+    if r.pipeWriter != nil {
+        r.pipeWriter.Close()  // 通知上传协程数据结束
     }
-  ],
-  "_expanded": false, // UI控制字段
-  // ... 其他原始字段
+    if r.doneCh != nil {
+        <-r.doneCh  // ⚠️ 阻塞等待 MinIO 上传完成（最长30分钟！）
+    }
+    return r.inner.Close()
 }
-
 ```
 
----
+### req.Body.Close() 应该在什么时候调用？
 
-### 方案一：详细连接界面 (Connections.vue)
+**结论**：必须在 `req.Write()` 完成后调用，且应该在 goroutine 中调用，避免阻塞主线程。
 
-当前 `Connections.vue` 中的 `updateConnections` 函数有一行代码 `data.filter(conn => conn.parentId === 0)`，这直接丢弃了所有子连接。你需要修改这里的逻辑。
+**原因分析**：
 
-#### 1. 数据处理逻辑 (Process Logic)
+1. `req.Write()` 完成后，Body 已被完全读取（EOF）
+2. 必须调用 `Close()` 来关闭 `pipeWriter`，否则 MinIO 上传协程会永远等待数据
+3. `Close()` 会阻塞等待 MinIO 上传完成（可能很长时间）
+4. 如果在主线程调用 `Close()`，会阻塞响应处理
 
-不要在接收数据时直接过滤。建议在 `computed` 属性中执行“扁平转树形”的算法：
+## 修复方案
 
-1. **建立索引**：创建一个 Map 或 Object，以 `id` 为键，存储所有连接对象的引用。
-2. **构建树**：遍历原始数组。
-* 如果 `parentId === 0`，将其视为**根节点**放入结果数组。
-* 如果 `parentId !== 0`，在 Map 中找到对应的父节点，将当前节点 push 到父节点的 `children` 数组中。
+### 修改文件
 
+- `mproxy/https.go`：`ConnectHTTPMitm` case（第 422-436 行）
 
-3. **统计聚合**（可选）：父节点的 `up`/`down` 流量通常需要包含子节点的流量，或者仅显示父节点自身的隧道流量。根据业务逻辑，你可能需要累加子节点的流量到父节点用于排序。
+### 修改内容
 
-#### 2. UI 渲染逻辑 (Render Strategy)
+**替换第 422-436 行为**：
 
-在 `<table class="connections-table">` 中，不能简单地使用一个 `v-for`。建议采用 **Fragment** 或 **Flattened View** 的方式渲染：
+```go
+// ============= 修复 Expect: 100-continue 死锁 =============
+// 创建错误通道（缓冲区防止 goroutine 泄漏）
+writeErrCh := make(chan error, 1)
 
-* **行结构设计**：
-* **父行 (Parent Row)**：显示 `parentId: 0` 的连接。第一列添加“展开/收起”图标（由 `_expanded` 状态控制）。
-* **子行 (Child Row)**：紧跟在父行之后。使用 `v-if="parent._expanded"` 控制渲染。
-* **样式区分**：子行需要添加缩进（Indent）或不同的背景色，以体现层级关系。
+// 启动 goroutine 异步发送请求
+go func() {
+    err := req.Write(connRemoteSite)
+    writeErrCh <- err
+    close(writeErrCh)
 
+    // 在 goroutine 中关闭 Body
+    // 这会阻塞等待 MinIO 上传完成，但不影响主线程
+    req.Body.Close()
+}()
 
-* **排序处理**：
-* 排序功能（`handleSort`）应当仅作用于**父节点列表**。
-* 子节点在父节点内部通常按 `id` 或 `startTime` 排序即可，不应受全局排序影响打乱层级。
+// 主线程立即开始读取响应，处理 1xx 中间状态
+resp, err = func() (*http.Response, error) {
+    for {
+        respTmp, readErr := http.ReadResponse(remote_res, req)
 
+        // 读取失败时，检查是否由写入错误导致
+        if readErr != nil {
+            select {
+            case writeErr := <-writeErrCh:
+                if writeErr != nil {
+                    return nil, fmt.Errorf("读取响应失败: %v (写入错误: %v)", readErr, writeErr)
+                }
+            default:
+            }
+            return nil, readErr
+        }
 
+        // 处理 1xx 中间状态响应（如 100 Continue）
+        if respTmp.StatusCode >= 100 && respTmp.StatusCode < 200 {
+            // 构造状态行
+            statusCodeStr := strconv.Itoa(respTmp.StatusCode) + " "
+            text := strings.TrimPrefix(respTmp.Status, statusCodeStr)
+            statusLine := "HTTP/1.1 " + statusCodeStr + text + "\r\n"
 
-#### 3. 搜索处理
+            // 转发给客户端
+            if _, err := io.WriteString(connFromClinet, statusLine); err != nil {
+                return nil, err
+            }
+            if err := respTmp.Header.Write(connFromClinet); err != nil {
+                return nil, err
+            }
+            if _, err := io.WriteString(connFromClinet, "\r\n"); err != nil {
+                return nil, err
+            }
 
-* 如果搜索匹配到了一个**子节点**，逻辑上应当自动显示其**父节点**，并自动将父节点设为 `expanded = true`，否则用户无法看到匹配结果。
+            // 清理临时响应的 Body
+            if respTmp.Body != nil {
+                io.Copy(io.Discard, respTmp.Body)
+                respTmp.Body.Close()
+            }
 
----
+            // 继续读取最终响应
+            continue
+        }
 
-### 方案二：概览界面 (Overview.vue)
+        // 返回最终响应（>= 200）
+        return respTmp, nil
+    }
+}()
+// ============= 修复结束 =============
+```
 
-当前 `Overview.vue` 直接接收全量数据。需求是仅显示 `status` 为 Active 的连接。
+### 关于 req.Body.Close() 位置的说明
 
-#### 1. 数据过滤逻辑 (Filter Logic)
+**为什么在 goroutine 内部调用 Close()**：
 
-在 `Overview.vue` 中，利用 Vue 的 `computed` 属性对 `wsStore.connections` 进行过滤。
+1. `req.Write()` 完成后，Body 数据已全部读取并发送
+2. 需要调用 `Close()` 来关闭 MinIO 的 pipeWriter，让上传协程知道数据已结束
+3. `Close()` 会阻塞等待 MinIO 上传完成（可能30分钟）
+4. 在 goroutine 中调用可以避免阻塞主线程的响应处理
 
-* **过滤条件**：
-根据你提供的 JSON，已关闭的连接状态为 `"status": "Closed"`。
-过滤逻辑应为：`status !== 'Closed'` (或者根据你的定义，等于 `"Active"`, `"Open"`, `"Established"` 等明确的活跃状态)。
+**不能在主线程调用的原因**：
 
-#### 2. 状态更新机制
+- 如果在主线程调用 `Close()`，需要等待 MinIO 上传完成
+- 这会延迟响应处理，与修复死锁的目标矛盾
 
-* 由于 WebSocket 推送的是全量或增量更新，`wsStore` 中的数据可能是混合了历史记录（如果后端没清理）。
-* **确保**：`Overview.vue` 的 `computed` 属性必须依赖 `wsStore.connections`。当 WebSocket 更新 Store 时，Overview 的列表会自动刷新，剔除变为 `Closed` 的连接。
+**不能不调用的原因**：
 
----
+- 如果不调用 `Close()`，MinIO 上传协程会永远等待更多数据
+- 会导致 goroutine 泄漏和资源无法释放
 
-### 总结：实施步骤规划
+## 流量统计影响
 
-1. **修改 Store (`websocket.js`) 或 组件逻辑**：
-* 保留原始的扁平化数据在 Store 中（保证数据源的单一事实来源）。
-* 不要在 Store 层面做破坏性的过滤（除非数据量巨大需要性能优化）。
+**无影响**：
 
+- `reqBodyReader.Read()` 在 `req.Write()` 内部被调用时仍会正常统计
+- 使用 `atomic.Int64` 进行全局计数，线程安全
+- 统计发生在读取时，与 Close() 时机无关
 
-2. **重构 `Connections.vue**`：
-* **废弃**：删除 `connections.value = data.filter(conn => conn.parentId === 0)` 这种直接丢弃数据的做法。
-* **新增**：引入 `buildConnectionTree(flatData)` 函数。
-* **状态**：引入一个 `expandedRowIds` 的 `Set` 结构来管理展开的行 ID（比修改数据对象更纯粹，避免响应式污染）。
-* **模板**：修改 `<table>` 结构，支持通过 `expandedRowIds.has(conn.id)` 来显示/隐藏子行。
+## 验证步骤
 
+1. **编译测试**
 
-3. **重构 `Overview.vue**`：
-* **新增**：创建一个 `activeConnections` 的计算属性：
-`return connections.value.filter(c => c.status === 'Active')`（具体状态字符串需与后端对其）。
-* **替换**：模板中的 `v-for` 遍历源改为这个新的计算属性。
+   ```bash
+   go build -o proxy_man main.go
+   ```
 
+2. **功能测试 - 100 Continue 场景**
 
+   ```bash
+   # 创建测试文件
+   dd if=/dev/zero of=test_100mb.bin bs=1M count=100
+   
+   # 使用 Curl 上传（会自动发送 Expect: 100-continue）
+   curl -v --proxy http://localhost:8080 \
+     -X POST \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @test_100mb.bin \
+     http://httpbin.org/post
+   ```
 
-通过这种设计，`Connections` 视图负责展示完整的调用链关系（HTTP over Tunnel），而 `Overview` 视图负责展示当前的实时负载情况，两者职责分离，数据源统一。
+3. **验证日志输出**
+
+   - 检查 100 Continue 是否被正确转发
+   - 检查流量统计是否正确
+   - 检查请求是否成功完成
+
+4. **边界测试**
+
+   - 小文件上传
+   - 客户端中途断连
+   - Target 拒绝请求（返回 417 Expectation Failed）
+
+## 风险评估
+
+| 风险                             | 级别 | 缓解措施                                  |
+| -------------------------------- | ---- | ----------------------------------------- |
+| goroutine 泄漏（MinIO 不可用时） | 中   | MinIO 有 30 分钟超时                      |
+| 连接复用问题                     | 低   | `connRemoteSite` 在循环中复用，修改不影响 |
+| 错误处理不完整                   | 低   | 使用 select 非阻塞检查写入错误            |
+
+## 总结
+
+1. **核心修复**：将 `req.Write()` 移到 goroutine 中，主线程立即读取响应
+2. **1xx 处理**：循环读取响应，检测并转发 1xx 中间状态
+3. **Body 关闭**：在 goroutine 中 `req.Write()` 完成后调用 `Close()`，避免阻塞主线程

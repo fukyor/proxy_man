@@ -33,7 +33,7 @@ type CoreHttpServer struct{
 
 	AllowHTTP2 bool
 	PreventParseHeader bool // 是否保使用用户的非标头部，默认false。除了RPC，一般不会需要非标头部
-	KeepDestHeaders bool  	// 是否保留已设置的响应头，默认false。我们通常没有自己设置响应头，都是使用resp响应头
+	KeepDestHeaders bool  	// 是否保留已设置的响应头，默认true。保证自己的响应头能够正常被添加
 	KeepAcceptEncoding bool	// 保留用户请求编码格式，默认false。除非必须要特定编码格式，否则保持为false让roundtrip决定。
 	ConnectMaintain bool 	// 是否持久维持隧道，默认false。客户端如果支持主动断开连接，则可以为ture
 
