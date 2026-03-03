@@ -26,10 +26,20 @@
       "Bash(ls -la \"E:\\\\D\\\\zuoyewenjian\\\\MyProject\\\\proxy_man\\\\myminio\"\" 2>nul || echo \"myminio directory not found \")",
       "Bash(findstr:*)",
       "Bash(go vet:*)",
-      "Bash(go test:*)"
+      "Bash(go test:*)",
+      "Bash(grep:*)",
+      "Bash(uv run:*)",
+      "Bash(dos2unix:*)",
+      "mcp__gitnexus__context",
+      "mcp__gitnexus__query",
+      "mcp__gitnexus__impact",
+      "mcp__gitnexus__list_repos"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "E:\\D\\zuoyewenjian\\MyProject\\proxy_man_ui\\proxyui"
+    ]
   },
   "alwaysThinkingEnabled": true
 }

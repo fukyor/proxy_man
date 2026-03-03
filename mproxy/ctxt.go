@@ -2,6 +2,8 @@ package mproxy
 import(
 	"net/http"
 	"crypto/tls"
+	"net"
+	"context"
 )
 
 // 上下文机制很重要，保留本次连接的转发fd和请求fd，保证通路。
@@ -22,6 +24,8 @@ type Pcontext struct{
 	TrafficCounter *TrafficCounter // http和mitm流量统计
 	tunnelTrafficClient	 *tunnelTrafficClient //加密tunnel流量统计
 	tunnelTrafficClientNoClosable *tunnelTrafficClientNoClosable // 加密tunnel流量统计
+
+	Dialer func(ctx context.Context, network string, addr string) (net.Conn, error)
 
 	exchangeCapture *ExchangeCapture // MITM Exchange 捕获状态
 }
@@ -52,15 +56,14 @@ func (ctx *Pcontext) WarnP(msg string, argv ...any) {
 	ctx.printf("WARN: "+msg, argv...)
 }
 
-
-/*日志打印做了两层抽象，一个私有一个公有*/
-func (ctx *Pcontext) printf(msg string, argv ...any) {
-	ctx.core_proxy.Logger.Printf("[%03d] "+msg+"\n", append([]any{ctx.Session & 0xFFFF}, argv...)...)
-}
-
 func (ctx *Pcontext) Log_P(msg string, argv ...any){
 	if ctx.core_proxy.Verbose == true{
 		ctx.printf("INFO: "+msg, argv...)
 	}
 }
 
+
+/*日志打印做了两层抽象，一个私有一个公有*/
+func (ctx *Pcontext) printf(msg string, argv ...any) {
+	ctx.core_proxy.Logger.Printf("[%03d] "+msg+"\n", append([]any{ctx.Session & 0xFFFF}, argv...)...)
+}

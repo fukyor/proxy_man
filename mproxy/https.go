@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"proxy_man/http1parser"
 	"proxy_man/signer"
 	"strconv"
@@ -17,19 +19,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	//"os"
 )
 
 type ConnectActionSelecter int
+
 var _errorRespMaxLength int64 = 500
 
 const (
 	ConnectAccept = iota
 	ConnectReject
 	ConnectMitm
-	ConnectHijack
 	ConnectHTTPMitm
-	ConnectProxyAuthHijack
 )
 
 var (
@@ -117,9 +117,9 @@ func TLSConfigFromCA(ca *tls.Certificate) func(host string, ctx *Pcontext) (*tls
 }
 
 func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Conn, err error) {
-	// if ctx.Dialer != nil {
-	// 	return ctx.Dialer(ctx.Req.Context(), network, addr)
-	// }
+	if ctx.Dialer != nil {
+		return ctx.Dialer(ctx.Req.Context(), network, addr)
+	}
 
 	// if proxy.Tr != nil && proxy.Tr.DialContext != nil {
 	// 	return proxy.Tr.DialContext(ctx.Req.Context(), network, addr)
@@ -129,7 +129,11 @@ func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Co
 }
 
 func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c net.Conn, err error) {
-	if proxy.ConnectMutiDial == nil && proxy.ConnectWithReqDial == nil {
+	if ctx.Dialer != nil {
+		return ctx.Dialer(ctx.Req.Context(), network, addr)
+	}
+
+	if proxy.ConnectDial == nil && proxy.ConnectWithReqDial == nil {
 		return proxy.dial(ctx, network, addr)
 	}
 
@@ -137,10 +141,81 @@ func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c
 		//return proxy.ConnectDialWithReq(ctx.Req, network, addr)
 	}
 
-	return proxy.ConnectMutiDial(network, addr)
+	return proxy.ConnectDial(network, addr)
 }
 
+func dialerFromEnv(proxy *CoreHttpServer) func(network, addr string) (net.Conn, error) {
+	httpsProxy := os.Getenv("HTTPS_PROXY")
+	if httpsProxy == "" {
+		httpsProxy = os.Getenv("https_proxy")
+	}
+	if httpsProxy == "" {
+		return nil
+	}
+	return proxy.NewConnectDialToProxy(httpsProxy)
+}
 
+func (proxy *CoreHttpServer) NewConnectDialToProxy(httpsProxy string) func(network, addr string) (net.Conn, error) {
+	return proxy.NewConnectDialToProxyWithHandler(httpsProxy, nil)
+}
+
+func (proxy *CoreHttpServer) NewConnectDialToProxyWithHandler(
+	httpsProxy string,
+	connectReqHandler func(req *http.Request),
+) func(network, addr string) (net.Conn, error) {
+	u, err := url.Parse(httpsProxy)
+	if err != nil {
+		return nil
+	}
+	if u.Scheme == "" || u.Scheme == "http" {
+		if !strings.ContainsRune(u.Host, ':') {
+			u.Host += ":80"
+		}
+		return func(network, addr string) (net.Conn, error) {
+			connectReq := &http.Request{
+				Method: http.MethodConnect,
+				URL:    &url.URL{Opaque: addr},
+				Host:   addr,
+				Header: make(http.Header),
+			}
+			if connectReqHandler != nil {
+				// 可通过connectReqHandler注入自定义header等进行认证，也可修改二级代理地址
+				// 二级代理基本不需要使用，因为通过proxy.dial和proxy.ConnectDialWithReq
+				// 已经完全满足灵活的二级代理，这里只考虑需要header认证时使用
+				connectReqHandler(connectReq)
+			}
+			// 建立tcp连接
+			c, err := proxy.dial(&Pcontext{Req: &http.Request{}}, network, u.Host)
+			if err != nil {
+				return nil, err
+			}
+			// 发起connect请求
+			_ = connectReq.Write(c)
+			// Read response.
+			// Okay to use and discard buffered reader here, because
+			// TLS server will not speak until spoken to.
+			br := bufio.NewReader(c)
+			resp, err := http.ReadResponse(br, connectReq)
+			if err != nil {
+				_ = c.Close()
+				return nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				resp, err := io.ReadAll(io.LimitReader(resp.Body, _errorRespMaxLength))
+				if err != nil {
+					return nil, err
+				}
+				_ = c.Close()
+				return nil, errors.New("proxy refused connection" + string(resp))
+			}
+			// 普通隧道
+			log.Println("二级隧道建立*******************************")
+			return c, nil
+		}
+	}
+	return nil
+}
 
 func httpError(w io.WriteCloser, ctx *Pcontext, err error) {
 	if ctx.core_proxy.ConnectionErrHandler != nil {
@@ -159,6 +234,24 @@ func httpError(w io.WriteCloser, ctx *Pcontext, err error) {
 	}
 	if err := w.Close(); err != nil {
 		ctx.WarnP("Error closing client connection: %s", err)
+	}
+}
+
+// httpErrorNoClose 写入错误响应但不关闭连接
+// 用于 HTTP-MITM 模式，连接的关闭统一由外层 defer clientConn.Close() 负责
+func httpErrorNoClose(w io.Writer, ctx *Pcontext, err error) {
+	if ctx.core_proxy.ConnectionErrHandler != nil {
+		ctx.core_proxy.ConnectionErrHandler(w, ctx, err)
+	} else {
+		errorMessage := err.Error()
+		errStr := fmt.Sprintf(
+			"HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+			len(errorMessage),
+			errorMessage,
+		)
+		if _, writeErr := io.WriteString(w, errStr); writeErr != nil {
+			ctx.WarnP("Error responding to client: %s", writeErr)
+		}
 	}
 }
 
@@ -229,7 +322,17 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 
 	strategy, host := OkConnect, r.URL.Host
 
-	// 切换处理状态
+	// MITM 开关：根据端口选择默认策略
+	if proxy.MitmEnabled {
+		_, port, _ := net.SplitHostPort(host)
+		if port == "80" {
+			strategy = HTTPMitmConnect
+		} else {
+			strategy = MitmConnect
+		}
+	}
+
+	// 切换处理状态（httpsHandlers 仍可覆盖上面的默认值）
 	for i, h := range proxy.httpsHandlers {
 		new_strategy, newhost := h.HandleConnect(host, topctx)
 		// 和resphook一样返回nil说明没有匹配上条件，如果不等于nil则匹配上了就替换新的策略
@@ -353,16 +456,17 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			// 检查是否是正常的连接关闭错误（EOF, ErrClosed, 或 net.OpError 导致的连接关闭）
 			isConnClosed := httpMitmCheckError(err)
 			if err != nil && !isConnClosed {
-				topctx.WarnP("http协议解析错误, 检查请求协议是否为http parser errror: %+#v", err)
+				topctx.WarnP("http协议解析错误, 检查请求协议是否为http. parser errror: %+#v", err)
 			}
 			if err != nil {
 				return
 			}
-			requestContext, finishRequest := context.WithCancel(req.Context())
-			req = req.WithContext(requestContext)
-			defer finishRequest()
-
 			requestOk := func(req *http.Request) bool {
+				// 模仿标准库为request绑定上下文，并提供关闭回调
+				requestContext, finishRequest := context.WithCancel(req.Context())
+				req = req.WithContext(requestContext)
+				defer finishRequest()
+
 				ctxt := &Pcontext{
 					core_proxy:     proxy,
 					Req:            req,
@@ -391,11 +495,6 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				})
 				defer proxy.MarkConnectionClosed(ctxt.Session) // 在请求完成后注销
 
-				// 模仿标准库为request绑定上下文
-				requestContext, CancelR := context.WithCancel(req.Context())
-				req = req.WithContext(requestContext)
-				defer CancelR()
-
 				req.RemoteAddr = r.RemoteAddr
 				ctxt.Log_P("req %v", r.Host)
 				ctxt.Req = req
@@ -404,6 +503,8 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				req, resp := proxy.filterRequest(req, ctxt)
 
 				ctxt.CaptureRequest(req) // 捕获请求快照
+
+				var reqDoneCh chan struct{} // 在 if resp==nil 块外声明，defer 可访问
 
 				if resp == nil {
 					if connRemoteSite == nil {
@@ -424,7 +525,9 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					// ============= 修复 Expect: 100-continue 死锁 =============
 					// 核心思路：发送和接受使用全双工，而不是串行发送
 					writeErrCh := make(chan error, 1)
+					reqDoneCh = make(chan struct{})
 					go func() {
+						defer close(reqDoneCh) // 在 req.Body.Close() 之后触发，确保 MinIO 上传完成
 						err := req.Write(connRemoteSite)
 						writeErrCh <- err
 						close(writeErrCh)
@@ -488,7 +591,12 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				}
 				// 响应处理
 				resp = proxy.filterResponse(resp, ctxt)
-				defer resp.Body.Close()
+				defer resp.Body.Close()                 // 先注册 → LIFO 后执行（触发 SendExchange）
+				defer func() {
+					if reqDoneCh != nil {
+						<-reqDoneCh // 等待 req body MinIO 上传完成，确保 SendExchange 读到正确的 Uploaded 状态
+					}
+				}()
 
 				isWebsocket := isWebSocketHandshake(resp.Header)
 				if isWebsocket {
@@ -544,6 +652,13 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 						}
 					}
 				}
+
+				// 修复：当响应为 Connection: close 时，必须主动断开连接
+				if resp.Close || strings.EqualFold(resp.Header.Get("Connection"), "close") {
+					ctxt.WarnP("收到服务器close响应, client->proxy->target连接关闭")
+					return false
+				}
+
 				return true
 			}
 			if !requestOk(req) {
@@ -579,7 +694,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		}
 		reqTlsReader := http1parser.NewRequestReader(proxy.PreventParseHeader, tlsConn)
 
-		// for维持隧道，循环读取client
+		// for维持隧道手动连接复用，循环读取client
 		for !reqTlsReader.IsEOF() {
 			// 获得格式化或非格式化请求头(由PreventParseHeader决定)
 			// req已解密
@@ -764,9 +879,15 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 						}
 					}
 				}
-				// 如果是client和proxy正常断开连接则返回true，而不是直接返回false后直接执行return逻辑
-				// 原因是为了循环上去接受client的FIN优雅退出，直接退出虽然可行但是不符合client收到
-				// connection: close后的逻辑主动发出FIN的逻辑
+				// 修复：如果响应头是 Connection: close，代理必须主动关闭连接。
+				// HTTP 协议规定这种情况下由服务器关闭连接来标识 Body 结束。
+				// 如果只返回 true 并且继续阻塞读取，在 401 Unauthorized 且没有 Content-Length 等情况下，
+				// 客户端会一直等待代理发来 EOF (FIN)，导致死锁挂起。
+				if resp.Close || strings.EqualFold(resp.Header.Get("Connection"), "close") {
+					ctxt.WarnP("收到服务器close响应, client->proxy->target连接关闭")
+					return false
+				}
+
 				return true
 			}
 

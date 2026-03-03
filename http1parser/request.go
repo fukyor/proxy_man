@@ -33,6 +33,33 @@ func NewRequestReader(preventCanonicalization bool, conn io.Reader) *RequestRead
 	}
 }
 
+// NewRequestReaderWithBufio creates a RequestReader that can inherit
+// an existing bufio.Reader (e.g., from Hijack). This is needed when
+// the standard library has already read part of the request data.
+//
+// conn 参数是底层连接（用于读取 br 后续数据）
+// br 参数是 Hijack 返回的 bufio.Reader（包含第一次读取时的缓存数据）
+func NewRequestReaderWithBufio(preventCanonicalization bool, conn io.Reader, br *bufio.Reader) *RequestReader {
+	if !preventCanonicalization {
+		return &RequestReader{
+			preventCanonicalization: false,
+			reader:                  br,
+		}
+	}
+
+	// 将 br 中的残留数据和底层 conn 拼接，确保后续头部大小计算正确
+	combined := io.MultiReader(br, conn)
+	var cloned bytes.Buffer
+	// 1. 三通管道存储请求副本
+	// 2. 封装带buffer的reader模拟标准库行为，也是最佳实践
+	reader := bufio.NewReader(io.TeeReader(combined, &cloned))
+	return &RequestReader{
+		preventCanonicalization: true,
+		reader:                  reader,
+		cloned:                  &cloned,
+	}
+}
+
 // IsEOF returns true if there is no more data that can be read from the
 // buffer and the underlying connection is closed.
 func (r *RequestReader) IsEOF() bool {

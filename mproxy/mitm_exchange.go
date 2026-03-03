@@ -48,7 +48,7 @@ type ResponseSnapshot struct {
 	BodyError    string `json:"bodyError,omitempty"`    // MinIO 上传错误
 }
 
-var GlobalExchangeChan = make(chan *HttpExchange, 1000)
+var GlobalExchangeChan = make(chan *HttpExchange, 5000) // 从 1000 扩容，避免高并发时静默丢弃
 
 // ========== ExchangeCapture：封装捕获状态 ==========
 
@@ -102,6 +102,9 @@ func (ctx *Pcontext) SetCaptureError(err error) {
 // SendExchange 发送 Exchange 到全局通道，在响应完成后自动调用
 // 这个方法会被 respBodyReader.onClose 触发
 func (ctx *Pcontext) SendExchange() {
+	if !ctx.core_proxy.MitmEnabled {
+		return // MitmEnabled 为总开关，关闭时不发送任何 Exchange
+	}
 	cap := ctx.exchangeCapture
 	if cap == nil || cap.skipSend || cap.sent {
 		return

@@ -1,216 +1,397 @@
-# ConnectHTTPMitm Expect: 100-continue 死锁修复计划
+# 优化计划：修复高并发下 WebSocket 推送瓶颈
 
-## 问题总结
+## 上下文
 
-### 死锁场景
+在高并发基准测试（`Benchmark_Stress_HTTP_MITM_Upload_Chunked`）下，WebSocket 推送器存在严重的性能瓶颈，导致：
 
-当客户端使用 `Expect: 100-continue` 头上传大文件时，`req.Write()` 同步阻塞导致无法及时读取和转发 Target 的 `100 Continue` 响应。
+1. 前端 UI 卡死（尤其是连接列表页面）
+2. 流量速率图表出现长时间断更
+3. MITM 抓包数据丢失
 
-### 根本原因
+当前性能：68.35 MB/s（cpu=2），需要进一步提升。
 
-`mproxy/https.go:422-431` 的同步执行模式：
+## 关键文件
 
-```go
-// 1. req.Write() 同步发送整个请求（包括大文件 Body）
-if err := req.Write(connRemoteSite); err != nil { ... }
+| 文件                      | 作用                            |
+| ------------------------- | ------------------------------- |
+| `proxysocket/hub.go`      | WebSocket 推送核心（308 行）    |
+| `mproxy/mitm_exchange.go` | MITM Exchange 通道（容量 1000） |
 
-// 2. 只有发送完成后才能读取响应
-resp, err = func() (*http.Response, error) {
-    defer req.Body.Close()
-    return http.ReadResponse(remote_res, req)
-}()
-```
+---
 
-## 关键发现：req.Body.Close() 的阻塞风险
+## 问题分析
 
-### Body 包装层次
+### 问题 1：写入锁内执行 JSON 序列化（严重 🔴）
 
-```
-原始 Body（来自客户端连接）
-    ↓
-reqBodyReader（流量统计层）  ← mproxy/https_traffic.go:26-46
-    ↓
-bodyCaptReader（MinIO 捕获层） ← myminio/minioUpload.go:24-31
-    ↓
-req.Body
-```
+**位置**：`hub.go:36-51` `sendTo` 方法
 
-### bodyCaptReader.Close() 的阻塞行为
-
-`myminio/minioUpload.go:172-186`:
+**现状**：
 
 ```go
-func (r *bodyCaptReader) Close() error {
-    if r.pipeWriter != nil {
-        r.pipeWriter.Close()  // 通知上传协程数据结束
-    }
-    if r.doneCh != nil {
-        <-r.doneCh  // ⚠️ 阻塞等待 MinIO 上传完成（最长30分钟！）
-    }
-    return r.inner.Close()
+func (h *WebSocketHub) sendTo(conn, sub, msg any) error {
+    sub.writeMu.Lock()
+    defer sub.writeMu.Unlock()
+
+    var buf bytes.Buffer
+    encoder := json.NewEncoder(&buf)  // 🔴 在锁内序列化！
+    encoder.SetEscapeHTML(false)
+    encoder.Encode(msg)
+    // ...
 }
 ```
 
-### req.Body.Close() 应该在什么时候调用？
+**影响**：JSON 序列化是 CPU 密集型操作，单次可能耗时 10-100ms。持锁期间阻塞所有其他推送，导致"饿死"现象。
 
-**结论**：必须在 `req.Write()` 完成后调用，且应该在 goroutine 中调用，避免阻塞主线程。
+---
 
-**原因分析**：
+### 问题 2：连接推送无上限（严重 🔴）
 
-1. `req.Write()` 完成后，Body 已被完全读取（EOF）
-2. 必须调用 `Close()` 来关闭 `pipeWriter`，否则 MinIO 上传协程会永远等待数据
-3. `Close()` 会阻塞等待 MinIO 上传完成（可能很长时间）
-4. 如果在主线程调用 `Close()`，会阻塞响应处理
+**位置**：`hub.go:134-163` `StartConnectionPusher`
 
-## 修复方案
+**现状**：每 500ms 遍历**整个** `Connections` Map，可能包含上万条已关闭连接（2秒墓碑期）。
 
-### 修改文件
+**影响**：
 
-- `mproxy/https.go`：`ConnectHTTPMitm` case（第 422-436 行）
+- 后端：序列化数万条数据榨干 CPU
+- 前端：Vue DOM 渲染压力过大导致页面卡死
 
-### 修改内容
+---
 
-**替换第 422-436 行为**：
+### 问题 3：Exchange 通道缓冲不足（中等 🟡）
+
+**位置**：`mitm_exchange.go:51`
+
+**现状**：`GlobalExchangeChan = make(chan *HttpExchange, 1000)`
+
+**影响**：高并发时通道满载，`SendExchange` 的 `default` 分支静默丢弃数据。
+
+---
+
+### 问题 4：日志批量推送重复序列化（新增 🆕）
+
+**位置**：`hub.go:231-264` `sendLogBatch`
+
+**现状**：每个客户端都独立构建和序列化 `filteredBatch`：
 
 ```go
-// ============= 修复 Expect: 100-continue 死锁 =============
-// 创建错误通道（缓冲区防止 goroutine 泄漏）
-writeErrCh := make(chan error, 1)
-
-// 启动 goroutine 异步发送请求
-go func() {
-    err := req.Write(connRemoteSite)
-    writeErrCh <- err
-    close(writeErrCh)
-
-    // 在 goroutine 中关闭 Body
-    // 这会阻塞等待 MinIO 上传完成，但不影响主线程
-    req.Body.Close()
-}()
-
-// 主线程立即开始读取响应，处理 1xx 中间状态
-resp, err = func() (*http.Response, error) {
-    for {
-        respTmp, readErr := http.ReadResponse(remote_res, req)
-
-        // 读取失败时，检查是否由写入错误导致
-        if readErr != nil {
-            select {
-            case writeErr := <-writeErrCh:
-                if writeErr != nil {
-                    return nil, fmt.Errorf("读取响应失败: %v (写入错误: %v)", readErr, writeErr)
-                }
-            default:
+func (h *WebSocketHub) sendLogBatch(batch []*mproxy.LogMessage) {
+    h.clients.Range(func(key, value any) bool {
+        // 每个客户端都重新过滤和构建数据
+        filteredBatch := make([]map[string]any, 0, len(batch))
+        for _, msg := range batch {
+            if shouldSendLog(msg.Level, sub.LogLevel) {
+                filteredBatch = append(...)  // 🔴 重复构建
             }
-            return nil, readErr
         }
-
-        // 处理 1xx 中间状态响应（如 100 Continue）
-        if respTmp.StatusCode >= 100 && respTmp.StatusCode < 200 {
-            // 构造状态行
-            statusCodeStr := strconv.Itoa(respTmp.StatusCode) + " "
-            text := strings.TrimPrefix(respTmp.Status, statusCodeStr)
-            statusLine := "HTTP/1.1 " + statusCodeStr + text + "\r\n"
-
-            // 转发给客户端
-            if _, err := io.WriteString(connFromClinet, statusLine); err != nil {
-                return nil, err
-            }
-            if err := respTmp.Header.Write(connFromClinet); err != nil {
-                return nil, err
-            }
-            if _, err := io.WriteString(connFromClinet, "\r\n"); err != nil {
-                return nil, err
-            }
-
-            // 清理临时响应的 Body
-            if respTmp.Body != nil {
-                io.Copy(io.Discard, respTmp.Body)
-                respTmp.Body.Close()
-            }
-
-            // 继续读取最终响应
-            continue
-        }
-
-        // 返回最终响应（>= 200）
-        return respTmp, nil
-    }
-}()
-// ============= 修复结束 =============
+        data := map[string]any{"type": "log_batch", "data": filteredBatch}
+        h.sendTo(conn, sub, data)  // 🔴 重复序列化
+    })
+}
 ```
 
-### 关于 req.Body.Close() 位置的说明
+**影响**：N 个客户端 = N 次数据构建 + N 次 JSON 序列化 + N 次锁竞争。
 
-**为什么在 goroutine 内部调用 Close()**：
+---
 
-1. `req.Write()` 完成后，Body 数据已全部读取并发送
-2. 需要调用 `Close()` 来关闭 MinIO 的 pipeWriter，让上传协程知道数据已结束
-3. `Close()` 会阻塞等待 MinIO 上传完成（可能30分钟）
-4. 在 goroutine 中调用可以避免阻塞主线程的响应处理
+### 问题 5：冗余代码（轻微 🟢）
 
-**不能在主线程调用的原因**：
+**位置**：`hub.go:205-228` `broadcastLog`
 
-- 如果在主线程调用 `Close()`，需要等待 MinIO 上传完成
-- 这会延迟响应处理，与修复死锁的目标矛盾
+**现状**：该函数定义后从未被调用（代码库搜索验证）。
 
-**不能不调用的原因**：
+---
 
-- 如果不调用 `Close()`，MinIO 上传协程会永远等待更多数据
-- 会导致 goroutine 泄漏和资源无法释放
+## 修订后的实施计划
 
-## 流量统计影响
+### 优化 1：预序列化 + 缩短锁持有时间
 
-**无影响**：
+**目标**：将 JSON 序列化移到锁外，锁内只执行网络写入。
 
-- `reqBodyReader.Read()` 在 `req.Write()` 内部被调用时仍会正常统计
-- 使用 `atomic.Int64` 进行全局计数，线程安全
-- 统计发生在读取时，与 Close() 时机无关
+**修改点**：`hub.go`
 
-## 验证步骤
+#### 步骤 1.1：新增 `sendToBytes` 方法
 
-1. **编译测试**
+```go
+// sendToBytes 直接发送已序列化的字节流（锁内仅网络写入）
+func (h *WebSocketHub) sendToBytes(conn *websocket.Conn, sub *Subscription, msgBytes []byte) error {
+    sub.writeMu.Lock()
+    defer sub.writeMu.Unlock()
 
-   ```bash
-   go build -o proxy_man main.go
-   ```
+    conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+    err := conn.WriteMessage(websocket.TextMessage, msgBytes)
+    conn.SetWriteDeadline(time.Time{})
+    return err
+}
+```
 
-2. **功能测试 - 100 Continue 场景**
+#### 步骤 1.2：修改 `broadcastToTopic` 预序列化
 
-   ```bash
-   # 创建测试文件
-   dd if=/dev/zero of=test_100mb.bin bs=1M count=100
-   
-   # 使用 Curl 上传（会自动发送 Expect: 100-continue）
-   curl -v --proxy http://localhost:8080 \
-     -X POST \
-     -H "Content-Type: application/octet-stream" \
-     --data-binary @test_100mb.bin \
-     http://httpbin.org/post
-   ```
+```go
+func (h *WebSocketHub) broadcastToTopic(topic string, msg any) {
+    // 预序列化（锁外执行一次）
+    msgBytes, err := json.Marshal(msg)
+    if err != nil {
+        return
+    }
 
-3. **验证日志输出**
+    h.clients.Range(func(key, value any) bool {
+        conn := key.(*websocket.Conn)
+        sub := value.(*Subscription)
 
-   - 检查 100 Continue 是否被正确转发
-   - 检查流量统计是否正确
-   - 检查请求是否成功完成
+        var shouldSend bool
+        switch topic {
+        case "traffic":
+            shouldSend = sub.Traffic
+        case "connections":
+            shouldSend = sub.Connections
+        case "mitm_detail":
+            shouldSend = sub.MitmDetail
+        }
 
-4. **边界测试**
+        if shouldSend {
+            if err := h.sendToBytes(conn, sub, msgBytes); err != nil {
+                h.clients.Delete(conn)
+                conn.Close()
+            }
+        }
+        return true
+    })
+}
+```
 
-   - 小文件上传
-   - 客户端中途断连
-   - Target 拒绝请求（返回 417 Expectation Failed）
+**影响**：`StartTrafficPusher`、`sendMitmBatch` 自动受益。
+
+---
+
+### 优化 2：连接推送限制 + 优先级排序
+
+**目标**：单次最多推送 300 条高价值连接。
+
+**修改点**：`hub.go:122-171` `StartConnectionPusher`
+
+```go
+func (h *WebSocketHub) StartConnectionPusher() {
+    const tombstoneRetention = 2000 * time.Millisecond
+    const maxConnections = 300  // 新增上限
+
+    go func() {
+        ticker := time.NewTicker(500 * time.Millisecond)
+        defer ticker.Stop()
+
+        for range ticker.C {
+            connections := make([]map[string]any, 0, maxConnections)
+            now := time.Now()
+
+            // 收集所有连接
+            allConns := make([]*mproxy.ConnectionInfo, 0)
+            h.proxy.Connections.Range(func(key, value any) bool {
+                session := key.(int64)
+                info := value.(*mproxy.ConnectionInfo)
+
+                // 垃圾回收
+                if info.Status == "Closed" && now.Sub(info.EndTime) > tombstoneRetention {
+                    h.proxy.Connections.Delete(session)
+                    return true
+                }
+                allConns = append(allConns, info)
+                return true
+            })
+
+            // 排序：活跃连接优先，然后按 Session 倒序（最新的在前）
+            sort.Slice(allConns, func(i, j int) bool {
+                if allConns[i].Status != allConns[j].Status {
+                    return allConns[i].Status == "Active"  // Active 优先
+                }
+                return allConns[i].Session > allConns[j].Session  // 新的优先
+            })
+
+            // 限制数量
+            limit := min(len(allConns), maxConnections)
+            for _, info := range allConns[:limit] {
+                connData := map[string]any{
+                    "id":        info.Session,
+                    "parentId":  info.ParentSess,
+                    "host":      info.Host,
+                    "method":    info.Method,
+                    "url":       info.URL,
+                    "remote":    info.RemoteAddr,
+                    "protocol":  info.Protocol,
+                    "startTime": info.StartTime,
+                    "status":    info.Status,
+                }
+                if info.UploadRef != nil {
+                    connData["up"] = *info.UploadRef
+                }
+                if info.DownloadRef != nil {
+                    connData["down"] = *info.DownloadRef
+                }
+                connections = append(connections, connData)
+            }
+
+            h.broadcastToTopic("connections", map[string]any{
+                "type": "connections",
+                "data": connections,
+            })
+        }
+    }()
+}
+```
+
+**新增 import**：`sort`
+
+---
+
+### 优化 3：Exchange 通道扩容
+
+**修改点**：`mitm_exchange.go:51`
+
+```go
+var GlobalExchangeChan = make(chan *HttpExchange, 5000)  // 从 1000 提升到 5000
+```
+
+---
+
+### 优化 4：日志推送分组预序列化（新增 🆕）
+
+**目标**：避免每个客户端重复序列化相同数据。
+
+**修改点**：`hub.go:231-264` `sendLogBatch`
+
+```go
+// sendLogBatch 批量发送日志，按日志级别分组预序列化
+func (h *WebSocketHub) sendLogBatch(batch []*mproxy.LogMessage) {
+    // 按日志级别分组
+    groups := map[string][]map[string]any{
+        "DEBUG": {},
+        "INFO":  {},
+        "WARN":  {},
+        "ERROR": {},
+    }
+
+    for _, msg := range batch {
+        data := map[string]any{
+            "level":   msg.Level,
+            "session": msg.Session,
+            "message": msg.Message,
+            "time":    msg.Time,
+        }
+        groups[msg.Level] = append(groups[msg.Level], data)
+    }
+
+    // 为每个级别预序列化
+    serialized := map[string][]byte{}
+    for level, data := range groups {
+        if len(data) == 0 {
+            continue
+        }
+        msg := map[string]any{"type": "log_batch", "data": data}
+        bytes, err := json.Marshal(msg)
+        if err != nil {
+            continue
+        }
+        serialized[level] = bytes
+    }
+
+    // 按客户端级别发送
+    h.clients.Range(func(key, value any) bool {
+        conn := key.(*websocket.Conn)
+        sub := value.(*Subscription)
+
+        if !sub.Logs {
+            return true
+        }
+
+        // 找到该客户端应该接收的最低级别
+        var targetLevel string
+        for _, level := range []string{"DEBUG", "INFO", "WARN", "ERROR"} {
+            if logLevels[level] >= logLevels[sub.LogLevel] {
+                targetLevel = level
+                break
+            }
+        }
+
+        if msgBytes, ok := serialized[targetLevel]; ok {
+            if err := h.sendToBytes(conn, sub, msgBytes); err != nil {
+                h.clients.Delete(conn)
+                conn.Close()
+            }
+        }
+        return true
+    })
+}
+```
+
+---
+
+### 优化 5：清理冗余代码
+
+**修改点**：删除 `hub.go:205-228` `broadcastLog` 函数（未使用）。
+
+---
+
+### 优化 6：SetWriteDeadline 优化（可选）
+
+**位置**：`sendToBytes` 方法
+
+**当前**：每次发送都设置和清除 deadline（2 次系统调用）
+
+**优化**：考虑在连接建立时设置持久写入超时，或在发送错误时直接关闭连接。
+
+**权衡**：需要评估 WebSocket 连接管理策略，暂不列入核心优化。
+
+---
+
+## 验证方法
+
+### 1. 自动化基准测试
+
+```bash
+# 执行压测
+go test -bench=Benchmark_Stress_HTTP_MITM_Upload_Chunked -benchtime=3s -run=^$ -v -cpu 2
+
+# 期待指标
+# - 吞吐量提升（68 MB/s → 目标 80+ MB/s）
+# - 无 goroutine 泄漏
+# - 无 panic
+```
+
+### 2. 人工验证
+
+| 验证项    | 方法               | 期待结果                 |
+| --------- | ------------------ | ------------------------ |
+| 流量图表  | 压测期间观察前端   | 每秒稳定更新，无卡死     |
+| 连接列表  | 观察详细连接页面   | 数量不超过 300，滚动流畅 |
+| MITM 数据 | 压测后查看抓包列表 | 数据完整，无大面积丢失   |
+
+### 3. pprof 分析
+
+```bash
+# 在压测期间采集 CPU profile
+curl http://localhost:6060/debug/pprof/profile?seconds=10 > cpu.prof
+
+# 分析
+go tool pprof -http=:8080 cpu.prof
+
+# 期待
+# - json encoding 时间占比显著下降
+# - sync.Mutex 等待时间减少
+```
+
+---
 
 ## 风险评估
 
-| 风险                             | 级别 | 缓解措施                                  |
-| -------------------------------- | ---- | ----------------------------------------- |
-| goroutine 泄漏（MinIO 不可用时） | 中   | MinIO 有 30 分钟超时                      |
-| 连接复用问题                     | 低   | `connRemoteSite` 在循环中复用，修改不影响 |
-| 错误处理不完整                   | 低   | 使用 select 非阻塞检查写入错误            |
+| 风险                 | 缓解措施                                           |
+| -------------------- | -------------------------------------------------- |
+| 预序列化内存占用增加 | 批量数据量已有限制（日志 200、MITM 100、连接 300） |
+| 连接排序增加 CPU     | 排序数量已限制（最多 300）                         |
+| 日志分组逻辑错误     | 保留原 `shouldSendLog` 逻辑验证                    |
 
-## 总结
+---
 
-1. **核心修复**：将 `req.Write()` 移到 goroutine 中，主线程立即读取响应
-2. **1xx 处理**：循环读取响应，检测并转发 1xx 中间状态
-3. **Body 关闭**：在 goroutine 中 `req.Write()` 完成后调用 `Close()`，避免阻塞主线程
+## 实施顺序
+
+1. **优先级高**：优化 1（预序列化） + 优化 3（通道扩容）- 低风险高收益
+2. **优先级高**：优化 2（连接限制） - 直接解决前端卡死
+3. **优先级中**：优化 4（日志分组） - 进一步减少 CPU 占用
+4. **优先级低**：优化 5（清理代码）- 代码整洁性

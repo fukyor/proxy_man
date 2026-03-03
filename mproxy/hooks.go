@@ -101,7 +101,7 @@ func (pcond *ReqProxyConds) DoConnectFunc(f func(host string, ctx *Pcontext) (*C
 	pcond.HandleConnect(FuncHttpsHandler(f))
 }
 
-//HandleConnect 主要就是做一个简单的策略决策，返回预定义的连接动作即可，不需要像 Handle 那样处理复杂的请求/响应内容。
+//HandleConnect 主要就是做一个简单的策略决策，返回预定义的连接动作即可，不需要像 Handle 那样处理请求/响应内容。
 func (pcond *ReqProxyConds) HandleConnect(h HttpsHandler) {
 	pcond.proxy.httpsHandlers = append(pcond.proxy.httpsHandlers,
 		FuncHttpsHandler(func(host string, ctx *Pcontext) (*ConnectAction, string) {

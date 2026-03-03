@@ -1,20 +1,30 @@
 package mproxy
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"proxy_man/http1parser"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
-func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request){
-	var err error 
+func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request) {
+	// ========== 新增：TCP 转发引擎模式 ==========
+	if proxy.HttpMitmNoTunnel {
+		proxy.myHttpHandleWithEngine(w, r)
+		return
+	}
+	// ========== 原有代码保留 ==========
+	var err error
 	var oriBody io.ReadCloser
 
-	if !r.URL.IsAbs(){
+	if !r.URL.IsAbs() {
 		proxy.DirectHandler.ServeHTTP(w, r)
 		return
 	}
@@ -24,10 +34,10 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 	defer cancel() // 确保函数退出时清理 Context，避免内存泄露，context本质也是通道占用内存
 
 	ctxt := &Pcontext{
-		core_proxy: proxy,
-		Req: r,
+		core_proxy:     proxy,
+		Req:            r,
 		TrafficCounter: &TrafficCounter{},
-		Session: atomic.AddInt64(&proxy.sess, 1),
+		Session:        atomic.AddInt64(&proxy.sess, 1),
 	}
 
 	// 注册连接
@@ -48,19 +58,19 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 
 	r, resp := proxy.filterRequest(r, ctxt)
 
-	if resp == nil{
+	if resp == nil {
 		RemoveProxyHeaders(ctxt, r)
 	}
 
 	resp, err = ctxt.RoundTrip(r) // 发起一次http请求
-	
+
 	if err != nil {
 		ctxt.Error = err
 	}
-	if resp != nil{
+	if resp != nil {
 		// Body是顶层接口，底层是body结构体。
 		// 虽然是浅拷贝，底层全部从同一个socket中读取数据，但是可以当resp.Body重新指向另一个body时，保证原数据不丢失
-		oriBody = resp.Body 
+		oriBody = resp.Body
 		defer oriBody.Close() // 和linux一样，关闭socket fd后断开tcp连接
 	}
 
@@ -116,7 +126,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if resp == nil{
+	if resp == nil {
 		var errorString string
 		if ctxt.Error != nil {
 			errorString = "error read response " + r.URL.Host + " : " + ctxt.Error.Error()
@@ -127,7 +137,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 			ctxt.Log_P(errorString)
 			http.Error(w, errorString, http.StatusInternalServerError)
 		}
-		return  // hanler函数结束后，go会自动释放连接
+		return // hanler函数结束后，go会自动释放连接
 	}
 
 	//不用担心Content-Length被删除的问题，会自动降级为chunked模式，go服务器自动处理chunked传输
@@ -135,7 +145,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		resp.Header.Del("Content-Length")
 	}
 	// 封装响应头
-	if !isWebsocket && !proxy.ConnectMaintain{
+	if !isWebsocket && !proxy.ConnectMaintain {
 		resp.Header.Set("Connection", "close")
 	}
 	buildHeaders(w.Header(), resp.Header, proxy.KeepDestHeaders)
@@ -146,7 +156,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 	// 处理sse和chunker连接。sse每个事件需要立即发送，不能缓冲。chunker数据分块发送，每块立即传输不能缓冲。
 	if strings.HasPrefix(w.Header().Get("content-type"), "text/event-stream") ||
 		strings.Contains(w.Header().Get("transfer-encoding"), "chunked") {
-		
+
 		bodyWriter = &flushWriter{w: w}
 	}
 
@@ -154,9 +164,271 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 
 	// resp.Body.Close()可能关闭新打开的内存或文件
 	// oriBody.Close()关闭原始socket，由body中的Close字段避免重复关闭socket报错。
-	if err := resp.Body.Close(); err != nil {  
+	if err := resp.Body.Close(); err != nil {
 		ctxt.WarnP("Can't close response body %v", err)
 	}
+}
 
+// myHttpHandleWithEngine 使用 TCP 转发引擎处理 HTTP 请求
+// 参考 https.go ConnectHTTPMitm 的实现
+//
+// 结构说明：
+// 1. Hijack 连接，定义 processRequest 统一处理函数
+// 2. 先处理首个请求（Go 标准库已解析的 r）
+// 3. 创建 RequestReader 循环读取后续 Keep-Alive 请求
+func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *http.Request) {
+	// ========== 第一阶段：Hijack 连接 ==========
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Webserver doesn't support hijacking", http.StatusInternalServerError)
+		return
+	}
+	clientConn, bufrw, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
 
+	// 保存原始 RemoteAddr，后续所有请求共用
+	remoteAddr := r.RemoteAddr
+
+	// ========== 定义统一的请求处理函数（消除首个请求与后续请求的代码重复） ==========
+	processRequest := func(req *http.Request) bool {
+		// 每次请求内部创建 context，并在函数结束回收，避免 defer 堆积在外部循环中
+		requestContext, finishRequest := context.WithCancel(req.Context())
+		req = req.WithContext(requestContext)
+		defer finishRequest()
+
+		ctxt := &Pcontext{
+			core_proxy:     proxy,
+			Req:            req,
+			TrafficCounter: &TrafficCounter{},
+			Session:        atomic.AddInt64(&proxy.sess, 1),
+		}
+		ctxt.StartCapture(0) // 无父隧道，parentSession=0
+
+		// 注册连接（无父隧道，PuploadRef/PdownloadRef 为 nil）
+		proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
+			Session:     ctxt.Session,
+			Host:        req.Host,
+			Method:      req.Method,
+			URL:         req.URL.String(),
+			RemoteAddr:  remoteAddr,
+			Protocol:    "HTTP-MITM",
+			StartTime:   time.Now(),
+			Status:      "Active",
+			UploadRef:   &ctxt.TrafficCounter.req_sum,
+			DownloadRef: &ctxt.TrafficCounter.resp_sum,
+			OnClose:     func() { finishRequest() },
+		})
+		defer proxy.MarkConnectionClosed(ctxt.Session)
+
+		// 移除原来的 requestContext, CancelR 等包装，交由外层(processRequest顶部)处理
+
+		req.RemoteAddr = remoteAddr
+		ctxt.Log_P("req %v", req.Host)
+		ctxt.Req = req
+
+		// URL 确保是绝对路径
+		if !req.URL.IsAbs() {
+			var urlErr error
+			req.URL, urlErr = url.Parse("http://" + req.Host + req.URL.String())
+			if urlErr != nil {
+				ctxt.WarnP("URL 解析失败: %v", urlErr)
+				return false
+			}
+		}
+
+		// ★ 关键：清理代理头部（RequestURI、Proxy-Connection 等）
+		// 普通 HTTP 代理的请求是代理格式，必须清理后才能发给目标服务器
+		RemoveProxyHeaders(ctxt, req)
+
+		// 请求过滤
+		req, resp := proxy.filterRequest(req, ctxt)
+
+		ctxt.CaptureRequest(req)
+
+		var reqDoneCh chan struct{} // 在 if resp==nil 块外声明，defer 可访问
+
+		if resp == nil {
+			// 端口处理：HTTP 默认端口 80
+			targetHost := req.Host
+			if !Port.MatchString(targetHost) {
+				targetHost += ":80"
+			}
+
+			// 每次新建连接（普通 HTTP 代理每个请求可能发往不同主机）
+			connRemoteSite, dialErr := proxy.connectDial(ctxt, "tcp", targetHost)
+			if dialErr != nil {
+				ctxt.SetCaptureError(dialErr)
+				ctxt.WarnP("远程拨号失败 Error dialing to %s: %s", req.Host, dialErr.Error())
+				httpErrorNoClose(clientConn, ctxt, dialErr)
+				return false
+			}
+			defer connRemoteSite.Close()
+
+			if ra := connRemoteSite.RemoteAddr(); ra != nil {
+				ctxt.Log_P("目标ip: %s (host: %s)", ra.String(), req.Host)
+			}
+			remoteBuf := bufio.NewReader(connRemoteSite)
+
+			// 全双工处理 Expect: 100-continue
+			writeErrCh := make(chan error, 1)
+			reqDoneCh = make(chan struct{})
+			go func() {
+				defer close(reqDoneCh) // 在 req.Body.Close() 之后触发，确保 MinIO 上传完成
+				writeErr := req.Write(connRemoteSite)
+				writeErrCh <- writeErr
+				close(writeErrCh)
+				req.Body.Close()
+			}()
+
+			var readErr error
+			resp, readErr = func() (*http.Response, error) {
+				for {
+					respTmp, rErr := http.ReadResponse(remoteBuf, req)
+					if rErr != nil {
+						select {
+						case writeErr := <-writeErrCh:
+							if writeErr != nil {
+								return nil, fmt.Errorf("读取响应失败: %v (写入错误: %v)", rErr, writeErr)
+							}
+						default:
+						}
+						return nil, rErr
+					}
+
+					// 处理 1xx 中间状态响应（如 100 Continue）
+					if respTmp.StatusCode >= 100 && respTmp.StatusCode < 200 {
+						statusCodeStr := strconv.Itoa(respTmp.StatusCode) + " "
+						text := strings.TrimPrefix(respTmp.Status, statusCodeStr)
+						statusLine := "HTTP/1.1 " + statusCodeStr + text + "\r\n"
+
+						if _, wErr := io.WriteString(clientConn, statusLine); wErr != nil {
+							return nil, wErr
+						}
+						if wErr := respTmp.Header.Write(clientConn); wErr != nil {
+							return nil, wErr
+						}
+						if _, wErr := io.WriteString(clientConn, "\r\n"); wErr != nil {
+							return nil, wErr
+						}
+
+						if respTmp.Body != nil {
+							io.Copy(io.Discard, respTmp.Body)
+							respTmp.Body.Close()
+						}
+						continue
+					}
+
+					return respTmp, nil
+				}
+			}()
+
+			if readErr != nil {
+				ctxt.SetCaptureError(readErr)
+				httpErrorNoClose(clientConn, ctxt, readErr)
+				return false
+			}
+		}
+
+		// 响应处理
+		resp = proxy.filterResponse(resp, ctxt)
+		defer resp.Body.Close() // 先注册 → LIFO 后执行（触发 SendExchange）
+		defer func() {
+			if reqDoneCh != nil {
+				<-reqDoneCh // 等待 req body MinIO 上传完成，确保 SendExchange 读到正确的 Uploaded 状态
+			}
+		}()
+
+		isWebsocket := isWebSocketHandshake(resp.Header)
+		if isWebsocket {
+			ctxt.SetCaptureSkip()
+		}
+
+		if !isWebsocket && !proxy.ConnectMaintain {
+			resp.Header.Set("Connection", "close")
+		}
+
+		// 手动写回响应头
+		statusCode := strconv.Itoa(resp.StatusCode) + " "
+		text := strings.TrimPrefix(resp.Status, statusCode)
+		if _, wErr := io.WriteString(clientConn, "HTTP/1.1 "+statusCode+text+"\r\n"); wErr != nil {
+			ctxt.WarnP("写回响应状态失败: %v", wErr)
+			return false
+		}
+		if wErr := resp.Header.Write(clientConn); wErr != nil {
+			ctxt.WarnP("写回响应头失败: %v", wErr)
+			return false
+		}
+		if _, wErr := io.WriteString(clientConn, "\r\n"); wErr != nil {
+			ctxt.WarnP("写回响应头结束符失败: %v", wErr)
+			return false
+		}
+
+		// 写入响应体
+		if resp.Body != nil {
+			isChunked := len(resp.TransferEncoding) > 0 &&
+				strings.EqualFold(resp.TransferEncoding[len(resp.TransferEncoding)-1], "chunked")
+
+			if isChunked {
+				chunked := newChunkedWriter(clientConn)
+				if _, cErr := io.Copy(chunked, resp.Body); cErr != nil {
+					ctxt.WarnP("写回 chunked 响应体失败: %v", cErr)
+					return false
+				}
+				if cErr := chunked.Close(); cErr != nil {
+					ctxt.WarnP("关闭 chunked writer 失败: %v", cErr)
+					return false
+				}
+			} else {
+				if _, cErr := io.Copy(clientConn, resp.Body); cErr != nil {
+					ctxt.WarnP("写回响应体失败: %v", cErr)
+					return false
+				}
+			}
+		}
+
+		// 检查 Connection: close
+		if resp.Close || strings.EqualFold(resp.Header.Get("Connection"), "close") {
+			ctxt.WarnP("收到服务器close响应, client->proxy->target连接关闭")
+			return false
+		}
+
+		return true
+	}
+
+	// ========== 第二阶段：处理首个请求（Go 标准库已解析） ==========
+
+	if !processRequest(r) { // 取消参数传递，由内部接管
+		return
+	}
+
+	// ========== 第三阶段：循环处理后续 Keep-Alive 请求 ==========
+	// 这里就需要特殊处理了。
+	// 在有connect请求的情况下，如果client没有收到200 OK不会发送有效数据，所以不用担心bufrw中残留数据问题。
+	// 但这里没有connect请求，所以Go标准库第一次读取时会读取到client大量的有效数据并缓存。此时劫持连接后，
+	// bufrw中存在大量缓存的有效数据。我们必须把他们一起读出来，所以这里我们创建了NewRequestReaderWithBufio。
+	reqReader := http1parser.NewRequestReaderWithBufio(
+		proxy.PreventParseHeader,
+		clientConn,
+		bufrw.Reader,
+	)
+
+	for !reqReader.IsEOF() {
+		req, readErr := reqReader.ReadRequest()
+		isConnClosed := httpMitmCheckError(readErr)
+		// isConnClosed为true表示非代理错误，而是client和target的连接主动关闭问题
+		if readErr != nil && !isConnClosed {
+			// isConnClosed为false表示非代理协议解析错误，可能数据包损坏或者是https协议
+			proxy.Logger.Printf("WARN: http协议解析错误1, 检查请求协议是否为http. parser errror: %+#v", err)
+		}
+		if readErr != nil {
+			return
+		}
+		if !processRequest(req) { // 同样无需在外层处理context
+			return
+		}
+	}
 }

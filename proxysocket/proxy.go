@@ -14,8 +14,8 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
 	CheckOrigin:     func(r *http.Request) bool { return true },
 	Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
 		w.Header().Set("Connection", "close")

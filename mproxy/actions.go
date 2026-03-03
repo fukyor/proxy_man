@@ -40,13 +40,15 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 				onClose:    nil,
 			}
 
-			// 第二层：MinIO 捕获（包装流量统计层）
-			contentType := req.Header.Get("Content-Type")
-			captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
-			if ctx.exchangeCapture != nil {
-				ctx.exchangeCapture.reqBodyCapture = captReader.Capture
+			// 第二层：MinIO 捕获（仅 MITM 开启时执行）
+			if ctx.core_proxy.MitmEnabled {
+				contentType := req.Header.Get("Content-Type")
+				captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+				ctx.exchangeCapture.reqBodyCapture = captReader.Capture // MitmEnabled=true 时 exchangeCapture 必然非 nil
+				req.Body = captReader
+			} else {
+				req.Body = trafficReader
 			}
-			req.Body = captReader
 		}
 		return req, nil
 	})
@@ -59,7 +61,7 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 
 		// 记录响应头大小
 		ctx.TrafficCounter.resp_header = GetHeaderSize(resp, ctx)
-		ctx.TrafficCounter.resp_sum = ctx.TrafficCounter.resp_header         // 子连接统计请求头大小
+		ctx.TrafficCounter.resp_sum = ctx.TrafficCounter.resp_header // 子连接统计请求头大小
 
 		var parentCounter *TrafficCounter
 		if ctx.parCtx != nil {
@@ -81,7 +83,7 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 
 			ctx.Log_P("[流量统计] 本次连接上行: %d (header:%d body:%d) | 本次连接下行: %d (header:%d body:0) | 本次连接总计: %d | 隧道总上行: %d | 隧道总下行: %d | 隧道流量总计: %d |  %s | %s ",
 				ctx.TrafficCounter.req_sum, ctx.TrafficCounter.req_header, ctx.TrafficCounter.req_body,
-				ctx.TrafficCounter.resp_header, ctx.TrafficCounter.resp_header,ctx.TrafficCounter.total, 
+				ctx.TrafficCounter.resp_header, ctx.TrafficCounter.resp_header, ctx.TrafficCounter.total,
 				pReqSum, pRespSum, pTotal,
 				ctx.Req.Method, ctx.Req.URL.String())
 			return resp
@@ -113,13 +115,15 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 			},
 		}
 
-		// 第二层：MinIO 捕获（包装流量统计层）
-		contentType := resp.Header.Get("Content-Type")
-		captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
-		if ctx.exchangeCapture != nil {
-			ctx.exchangeCapture.respBodyCapture = captReader.Capture
+		// 第二层：MinIO 捕获（仅 MITM 开启时执行）
+		if ctx.core_proxy.MitmEnabled {
+			contentType := resp.Header.Get("Content-Type")
+			captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+			ctx.exchangeCapture.respBodyCapture = captReader.Capture // MitmEnabled=true 时 exchangeCapture 必然非 nil
+			resp.Body = captReader
+		} else {
+			resp.Body = trafficReader
 		}
-		resp.Body = captReader
 		return resp
 	})
 }
@@ -158,8 +162,8 @@ func tunnelMonitor(proxy *CoreHttpServer) {
 			ctx.Log_P("[流量统计] 上行: %d | 下行: %d | 总计: %d ",
 				ctx.tunnelTrafficClient.nread,
 				ctx.tunnelTrafficClient.nwrite,
-				ctx.tunnelTrafficClient.nread + ctx.tunnelTrafficClient.nwrite,
-				)
+				ctx.tunnelTrafficClient.nread+ctx.tunnelTrafficClient.nwrite,
+			)
 			// 在连接关闭时注销
 			proxy.MarkConnectionClosed(ctx.Session)
 		}
@@ -167,7 +171,7 @@ func tunnelMonitor(proxy *CoreHttpServer) {
 			ctx.Log_P("[流量统计] 上行: %d | 下行: %d | 总计: %d ",
 				ctx.tunnelTrafficClientNoClosable.nread,
 				ctx.tunnelTrafficClientNoClosable.nwrite,
-				ctx.tunnelTrafficClientNoClosable.nread + ctx.tunnelTrafficClientNoClosable.nwrite,
+				ctx.tunnelTrafficClientNoClosable.nread+ctx.tunnelTrafficClientNoClosable.nwrite,
 			)
 			// 在连接关闭时注销
 			proxy.MarkConnectionClosed(ctx.Session)
@@ -175,8 +179,6 @@ func tunnelMonitor(proxy *CoreHttpServer) {
 		return req, nil
 	})
 }
-
-
 
 var httpDomains = map[string]bool{
 	"example.com": true,
