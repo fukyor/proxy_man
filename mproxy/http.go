@@ -193,6 +193,31 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 	// 保存原始 RemoteAddr，后续所有请求共用
 	remoteAddr := r.RemoteAddr
 
+	// ========== 创建虚拟隧道（与 HTTPS MITM 的顶层隧道对齐） ==========
+	topctx := &Pcontext{
+		core_proxy:     proxy,
+		Req:            r,
+		TrafficCounter: &TrafficCounter{},
+		Session:        atomic.AddInt64(&proxy.sess, 1),
+	}
+	tunnelSession := topctx.Session
+
+	proxy.Connections.Store(tunnelSession, &ConnectionInfo{
+		Session:     tunnelSession,
+		ParentSess:  0,
+		Host:        r.Host,
+		Method:      "Tcp-Keep-Alive",
+		URL:         r.Host,
+		RemoteAddr:  remoteAddr,
+		Protocol:    "HTTP_MUX",
+		StartTime:   time.Now(),
+		Status:      "Active",
+		UploadRef:   &topctx.TrafficCounter.req_sum,
+		DownloadRef: &topctx.TrafficCounter.resp_sum,
+	})
+	defer proxy.MarkConnectionClosed(tunnelSession)
+	// ========== 虚拟隧道创建结束 ==========
+
 	// ========== 定义统一的请求处理函数（消除首个请求与后续请求的代码重复） ==========
 	processRequest := func(req *http.Request) bool {
 		// 每次请求内部创建 context，并在函数结束回收，避免 defer 堆积在外部循环中
@@ -200,27 +225,41 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		req = req.WithContext(requestContext)
 		defer finishRequest()
 
+		// URL 确保是绝对路径，移动到上面以便在 Connections.Store 时能获取到完整 URL
+		if !req.URL.IsAbs() {
+			var urlErr error
+			req.URL, urlErr = url.Parse("http://" + req.Host + req.URL.String())
+			if urlErr != nil {
+				proxy.Logger.Printf("WARN: URL 解析失败: %v", urlErr)
+				return false
+			}
+		}
+
 		ctxt := &Pcontext{
 			core_proxy:     proxy,
 			Req:            req,
+			parCtx:         topctx, // 指向虚拟隧道
 			TrafficCounter: &TrafficCounter{},
 			Session:        atomic.AddInt64(&proxy.sess, 1),
 		}
-		ctxt.StartCapture(0) // 无父隧道，parentSession=0
+		ctxt.StartCapture(tunnelSession) // 父隧道 session
 
-		// 注册连接（无父隧道，PuploadRef/PdownloadRef 为 nil）
+		// 注册连接（指向虚拟隧道）
 		proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
-			Session:     ctxt.Session,
-			Host:        req.Host,
-			Method:      req.Method,
-			URL:         req.URL.String(),
-			RemoteAddr:  remoteAddr,
-			Protocol:    "HTTP-MITM",
-			StartTime:   time.Now(),
-			Status:      "Active",
-			UploadRef:   &ctxt.TrafficCounter.req_sum,
-			DownloadRef: &ctxt.TrafficCounter.resp_sum,
-			OnClose:     func() { finishRequest() },
+			Session:      ctxt.Session,
+			ParentSess:   tunnelSession, // 指向虚拟隧道
+			Host:         req.Host,
+			Method:       req.Method,
+			URL:          req.URL.String(),
+			RemoteAddr:   remoteAddr,
+			Protocol:     "HTTP-MITM",
+			StartTime:    time.Now(),
+			Status:       "Active",
+			PuploadRef:   &topctx.TrafficCounter.req_sum,  // 父隧道上行引用
+			PdownloadRef: &topctx.TrafficCounter.resp_sum, // 父隧道下行引用
+			UploadRef:    &ctxt.TrafficCounter.req_sum,
+			DownloadRef:  &ctxt.TrafficCounter.resp_sum,
+			OnClose:      func() { finishRequest() },
 		})
 		defer proxy.MarkConnectionClosed(ctxt.Session)
 
@@ -229,16 +268,6 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		req.RemoteAddr = remoteAddr
 		ctxt.Log_P("req %v", req.Host)
 		ctxt.Req = req
-
-		// URL 确保是绝对路径
-		if !req.URL.IsAbs() {
-			var urlErr error
-			req.URL, urlErr = url.Parse("http://" + req.Host + req.URL.String())
-			if urlErr != nil {
-				ctxt.WarnP("URL 解析失败: %v", urlErr)
-				return false
-			}
-		}
 
 		// ★ 关键：清理代理头部（RequestURI、Proxy-Connection 等）
 		// 普通 HTTP 代理的请求是代理格式，必须清理后才能发给目标服务器
@@ -400,8 +429,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 	}
 
 	// ========== 第二阶段：处理首个请求（Go 标准库已解析） ==========
-
-	if !processRequest(r) { // 取消参数传递，由内部接管
+	if !processRequest(r) {
 		return
 	}
 
@@ -416,6 +444,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		bufrw.Reader,
 	)
 
+	// 手动连接复用
 	for !reqReader.IsEOF() {
 		req, readErr := reqReader.ReadRequest()
 		isConnClosed := httpMitmCheckError(readErr)

@@ -117,13 +117,10 @@ func TLSConfigFromCA(ca *tls.Certificate) func(host string, ctx *Pcontext) (*tls
 }
 
 func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Conn, err error) {
+	// 用户自定义二级代理，用于扩展规则代理
 	if ctx.Dialer != nil {
 		return ctx.Dialer(ctx.Req.Context(), network, addr)
 	}
-
-	// if proxy.Tr != nil && proxy.Tr.DialContext != nil {
-	// 	return proxy.Tr.DialContext(ctx.Req.Context(), network, addr)
-	// }
 
 	return net.Dial(network, addr)
 }
@@ -137,10 +134,13 @@ func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c
 		return proxy.dial(ctx, network, addr)
 	}
 
+	// 完成规则代理完成规则转发
 	if proxy.ConnectWithReqDial != nil {
-		//return proxy.ConnectDialWithReq(ctx.Req, network, addr)
+		return proxy.ConnectWithReqDial(ctx.Req, network, addr)
 	}
 
+	// 默认二级代理，通过https_proxy环境变量设置
+	// 尽可能先通过ConnectWithReqDial规则代理完成规则转发
 	return proxy.ConnectDial(network, addr)
 }
 
@@ -167,6 +167,7 @@ func (proxy *CoreHttpServer) NewConnectDialToProxyWithHandler(
 	if err != nil {
 		return nil
 	}
+	// 二级普通代理。我们暂时不考虑二级加密代理
 	if u.Scheme == "" || u.Scheme == "http" {
 		if !strings.ContainsRune(u.Host, ':') {
 			u.Host += ":80"
@@ -214,6 +215,7 @@ func (proxy *CoreHttpServer) NewConnectDialToProxyWithHandler(
 			return c, nil
 		}
 	}
+	log.Println("Warn: 只支持二级普通代理，检查是否误用二级加密代理")
 	return nil
 }
 
@@ -353,6 +355,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		if err != nil {
 			topctx.WarnP("拨号获取套接字错误Error dialing to %s: %s", host, err.Error())
 			httpError(connRemoteSite, topctx, err) // 如果出错手动关闭连接
+			proxy.MarkConnectionClosed(tunnelSession)
 			return
 		}
 		topctx.Log_P("Accepting CONNECT to %s", host)
@@ -360,6 +363,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		_, err = connFromClinet.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n"))
 		if err != nil {
 			topctx.WarnP("200 Connection fail established")
+			proxy.MarkConnectionClosed(tunnelSession)
 			return
 		}
 
@@ -391,7 +395,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			DownloadRef: &proxyClientTCP.nwrite, // nwrite = 写给客户端 = Download
 			OnClose:     func() { connFromClinet.Close() },
 		})
-		// 注册回调完成流量统计，并触发墓碑机制
+		// 注册回调完成流量统计，清理顶层隧道连接记录
 		tunnelMonitor(proxy)
 		proxy.filterRequest(r, Counter_Ctxt)
 
@@ -591,7 +595,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				}
 				// 响应处理
 				resp = proxy.filterResponse(resp, ctxt)
-				defer resp.Body.Close()                 // 先注册 → LIFO 后执行（触发 SendExchange）
+				defer resp.Body.Close() // 先注册 → LIFO 后执行（触发 SendExchange）
 				defer func() {
 					if reqDoneCh != nil {
 						<-reqDoneCh // 等待 req body MinIO 上传完成，确保 SendExchange 读到正确的 Uploaded 状态
@@ -905,5 +909,6 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		_ = connFromClinet.Close()
+		proxy.MarkConnectionClosed(tunnelSession)
 	}
 }

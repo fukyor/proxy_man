@@ -132,9 +132,9 @@ func NewCoreHttpSever() *CoreHttpServer{
 		// 自定义tr用于代理发送请求
 		Transport: &http.Transport{
 			TLSClientConfig: tlsClientSkipVerify,
-			//Proxy: http.ProxyFromEnvironment, //从环境变量读取http_proxy作为代理，而不使用硬编码
+			//Proxy: http.ProxyFromEnvironment, // 设置roundtrip的二级代理
 		},
 	}
-	return core_proxy
 	//core_proxy.ConnectDial = dialerFromEnv(&proxy)
+	return core_proxy
 }

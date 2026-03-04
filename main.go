@@ -22,7 +22,7 @@ func main() {
 	proxy.KeepAcceptEncoding = false
 	proxy.PreventParseHeader = false
 	proxy.KeepDestHeaders = true
-	proxy.ConnectMaintain = false
+	proxy.ConnectMaintain = true
 	proxy.MitmEnabled = true
 	proxy.HttpMitmNoTunnel = true
 
@@ -62,6 +62,23 @@ func main() {
 	//mproxy.HttpMitmMode(proxy)
 	//mproxy.HttpsMitmMode(proxy)
 
+	// 创建路由引擎
+	router := mproxy.NewRouter(proxy)
+
+	// 注册二级代理节点（示例，按实际环境修改）
+	proxy1, err := mproxy.NewHttpProxyDialer(proxy, "Proxy1", "http://127.0.0.1:7892")
+	if err != nil {
+		log.Printf("警告: 创建 Proxy1 失败: %v", err)
+	} else {
+		router.AddDialer("Proxy1", proxy1)
+	}
+
+	// 配置路由规则（按优先级从高到低）
+	router.AddRule(mproxy.DomainKeywordRule("youtube", "google"), "Proxy1")
+	router.AddRule(mproxy.DomainSuffixRule("twitter.com", "x.com"), "Proxy1")
+
+	// 挂载路由分发
+	proxy.ConnectWithReqDial = router.RouteDial
 
 	// 启动 WebSocket 控制服务
 	ws := &proxysocket.WebsocketServer{
