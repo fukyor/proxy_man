@@ -38,6 +38,7 @@ type CoreHttpServer struct{
 	ConnectMaintain bool 	// 是否持久维持隧道，默认false。客户端如果支持主动断开连接，则可以为ture
 	MitmEnabled         bool // MITM 全局开关，开启后根据端口自动选择 MITM 模式
 	HttpMitmNoTunnel bool // 是否在 HTTP 普通代理中使用 TCP 转发引擎（类似 HTTP-MITM）
+	RouteEnable bool // 是否开启规则代理
 
 	Connections sync.Map // int64 (Session) -> *ConnectionInfo
 }

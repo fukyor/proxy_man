@@ -134,7 +134,8 @@ func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Co
 	if ctx.Dialer != nil {
 		return ctx.Dialer(ctx.Req.Context(), network, addr)
 	}
-
+	// 作为最底层的 TCP 拨号，无需再重复打印复杂的路由逻辑
+	// 避免与上层 Router 的日志混淆
 	return net.Dial(network, addr)
 }
 
@@ -154,6 +155,7 @@ func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c
 
 	// 默认二级代理，通过https_proxy环境变量设置
 	// 尽可能先通过ConnectWithReqDial规则代理完成规则转发
+	proxy.Logger.Printf("WARN: [路由匹配] 回退默认二级代理 -> HTTPS_PROXY")
 	return proxy.ConnectDial(network, addr)
 }
 
@@ -338,13 +340,10 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 	strategy, host := OkConnect, r.URL.Host
 
 	// MITM 开关：根据端口选择默认策略
-	if proxy.MitmEnabled {
-		_, port, _ := net.SplitHostPort(host)
-		if port == "80" {
-			strategy = HTTPMitmConnect
-		} else {
-			strategy = MitmConnect
-		}
+	if !proxy.MitmEnabled {
+		strategy = OkConnect
+	}else {
+		strategy = MitmConnect
 	}
 
 	// 切换处理状态（httpsHandlers 仍可覆盖上面的默认值）
@@ -409,7 +408,23 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			OnClose:     func() { connFromClinet.Close() },
 		})
 		// 注册回调完成流量统计，清理顶层隧道连接记录
-		tunnelMonitor(proxy)
+		proxyClientTCP.onClose = func() {
+			topctx.Log_P("[流量统计] 上行: %d | 下行: %d | 总计: %d ",
+				proxyClientTCP.nread,
+				proxyClientTCP.nwrite,
+				proxyClientTCP.nread+proxyClientTCP.nwrite,
+			)
+			proxy.MarkConnectionClosed(topctx.Session)
+		}
+		proxyClientTCPNo.onClose = func() {
+			topctx.Log_P("[流量统计] 上行: %d | 下行: %d | 总计: %d ",
+				proxyClientTCPNo.nread,
+				proxyClientTCPNo.nwrite,
+				proxyClientTCPNo.nread+proxyClientTCPNo.nwrite,
+			)
+			proxy.MarkConnectionClosed(topctx.Session)
+		}
+
 		proxy.filterRequest(r, Counter_Ctxt)
 
 		targetTCP, targetOK := connRemoteSite.(halfClosable)
@@ -500,7 +515,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				Session:        atomic.AddInt64(&proxy.sess, 1),
 				core_proxy:     proxy,
 				parCtx:         topctx,
-				UserData:       topctx.UserData,    // 继承用户数据
+				UserData:       topctx.UserData,     // 继承用户数据
 				RoundTripper:   topctx.RoundTripper, // 继承自定义 RoundTripper
 				TrafficCounter: &TrafficCounter{},
 			}
@@ -617,10 +632,11 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					return false
 				}
 
-				// WebSocket 处理
+				// WebSocket 处理：使用 origBody 获取底层 ReadWriter
+				// （filterResponse 的 respBodyReader 包装器不实现 Write 方法）
 				if isWebsocket {
 					ctxt.Log_P("Response looks like websocket upgrade.")
-					wsConn, ok := resp.Body.(io.ReadWriter)
+					wsConn, ok := origBody.(io.ReadWriter)
 					if !ok {
 						ctxt.WarnP("Unable to use Websocket connection")
 						return false

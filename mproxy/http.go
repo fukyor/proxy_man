@@ -1,9 +1,7 @@
 package mproxy
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -239,6 +237,8 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 			core_proxy:     proxy,
 			Req:            req,
 			parCtx:         topctx, // 指向虚拟隧道
+			UserData:       topctx.UserData,
+			RoundTripper:   topctx.RoundTripper,
 			TrafficCounter: &TrafficCounter{},
 			Session:        atomic.AddInt64(&proxy.sess, 1),
 		}
@@ -263,117 +263,52 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		})
 		defer proxy.MarkConnectionClosed(ctxt.Session)
 
-		// 移除原来的 requestContext, CancelR 等包装，交由外层(processRequest顶部)处理
-
 		req.RemoteAddr = remoteAddr
 		ctxt.Log_P("req %v", req.Host)
 		ctxt.Req = req
 
-		// ★ 关键：清理代理头部（RequestURI、Proxy-Connection 等）
-		// 普通 HTTP 代理的请求是代理格式，必须清理后才能发给目标服务器
-		RemoveProxyHeaders(ctxt, req)
-
-		// 请求过滤
+		// 请求过滤（RemoveProxyHeaders 移到 filterRequest 之后，与 https.go 一致）
 		req, resp := proxy.filterRequest(req, ctxt)
 
 		ctxt.CaptureRequest(req)
 
-		var reqDoneCh chan struct{} // 在 if resp==nil 块外声明，defer 可访问
-
 		if resp == nil {
-			// 端口处理：HTTP 默认端口 80
-			targetHost := req.Host
-			if !Port.MatchString(targetHost) {
-				targetHost += ":80"
-			}
-
-			// 每次新建连接（普通 HTTP 代理每个请求可能发往不同主机）
-			connRemoteSite, dialErr := proxy.connectDial(ctxt, "tcp", targetHost)
-			if dialErr != nil {
-				ctxt.SetCaptureError(dialErr)
-				ctxt.WarnP("远程拨号失败 Error dialing to %s: %s", req.Host, dialErr.Error())
-				httpErrorNoClose(clientConn, ctxt, dialErr)
+			RemoveProxyHeaders(ctxt, req)
+			var err error
+			resp, err = func() (*http.Response, error) {
+				defer req.Body.Close()
+				return ctxt.RoundTrip(req)
+			}()
+			if err != nil {
+				ctxt.SetCaptureError(err)
+				ctxt.WarnP("RoundTrip 失败: %v", err)
+				httpErrorNoClose(clientConn, ctxt, err)
 				return false
 			}
-			defer connRemoteSite.Close()
-
-			if ra := connRemoteSite.RemoteAddr(); ra != nil {
-				ctxt.Log_P("目标ip: %s (host: %s)", ra.String(), req.Host)
-			}
-			remoteBuf := bufio.NewReader(connRemoteSite)
-
-			// 全双工处理 Expect: 100-continue
-			writeErrCh := make(chan error, 1)
-			reqDoneCh = make(chan struct{})
-			go func() {
-				defer close(reqDoneCh) // 在 req.Body.Close() 之后触发，确保 MinIO 上传完成
-				writeErr := req.Write(connRemoteSite)
-				writeErrCh <- writeErr
-				close(writeErrCh)
-				req.Body.Close()
-			}()
-
-			var readErr error
-			resp, readErr = func() (*http.Response, error) {
-				for {
-					respTmp, rErr := http.ReadResponse(remoteBuf, req)
-					if rErr != nil {
-						select {
-						case writeErr := <-writeErrCh:
-							if writeErr != nil {
-								return nil, fmt.Errorf("读取响应失败: %v (写入错误: %v)", rErr, writeErr)
-							}
-						default:
-						}
-						return nil, rErr
-					}
-
-					// 处理 1xx 中间状态响应（如 100 Continue）
-					if respTmp.StatusCode >= 100 && respTmp.StatusCode < 200 {
-						statusCodeStr := strconv.Itoa(respTmp.StatusCode) + " "
-						text := strings.TrimPrefix(respTmp.Status, statusCodeStr)
-						statusLine := "HTTP/1.1 " + statusCodeStr + text + "\r\n"
-
-						if _, wErr := io.WriteString(clientConn, statusLine); wErr != nil {
-							return nil, wErr
-						}
-						if wErr := respTmp.Header.Write(clientConn); wErr != nil {
-							return nil, wErr
-						}
-						if _, wErr := io.WriteString(clientConn, "\r\n"); wErr != nil {
-							return nil, wErr
-						}
-
-						if respTmp.Body != nil {
-							io.Copy(io.Discard, respTmp.Body)
-							respTmp.Body.Close()
-						}
-						continue
-					}
-
-					return respTmp, nil
-				}
-			}()
-
-			if readErr != nil {
-				ctxt.SetCaptureError(readErr)
-				httpErrorNoClose(clientConn, ctxt, readErr)
-				return false
-			}
+			ctxt.Log_P("resp %v", resp.Status)
 		}
 
-		// 响应处理
+		// bodyModified 检测：保存原始 Body 用于 WebSocket 和 chunked 判断
+		origBody := resp.Body
 		resp = proxy.filterResponse(resp, ctxt)
-		defer resp.Body.Close() // 先注册 → LIFO 后执行（触发 SendExchange）
-		defer func() {
-			if reqDoneCh != nil {
-				<-reqDoneCh // 等待 req body MinIO 上传完成，确保 SendExchange 读到正确的 Uploaded 状态
-			}
-		}()
+		bodyModified := resp.Body != origBody
+		defer resp.Body.Close()
 
+		// WebSocket 检测
 		isWebsocket := isWebSocketHandshake(resp.Header)
 		if isWebsocket {
 			ctxt.SetCaptureSkip()
+		}
+
+		// RFC7230 头部处理
+		if isWebsocket || req.Method == http.MethodHead {
+			// HEAD 请求和 WebSocket 不修改 Content-Length
+		} else if (resp.StatusCode >= 100 && resp.StatusCode < 200) ||
+			resp.StatusCode == http.StatusNoContent {
+			resp.Header.Del("Content-Length")
+		} else if bodyModified {
+			resp.Header.Del("Content-Length")
+			resp.Header.Set("Transfer-Encoding", "chunked")
 		}
 
 		if !isWebsocket && !proxy.ConnectMaintain {
@@ -383,39 +318,56 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		// 手动写回响应头
 		statusCode := strconv.Itoa(resp.StatusCode) + " "
 		text := strings.TrimPrefix(resp.Status, statusCode)
-		if _, wErr := io.WriteString(clientConn, "HTTP/1.1 "+statusCode+text+"\r\n"); wErr != nil {
-			ctxt.WarnP("写回响应状态失败: %v", wErr)
+		if _, err := io.WriteString(clientConn, "HTTP/1.1 "+statusCode+text+"\r\n"); err != nil {
+			ctxt.WarnP("写回响应状态失败: %v", err)
 			return false
 		}
-		if wErr := resp.Header.Write(clientConn); wErr != nil {
-			ctxt.WarnP("写回响应头失败: %v", wErr)
+		if err := resp.Header.Write(clientConn); err != nil {
+			ctxt.WarnP("写回响应头失败: %v", err)
 			return false
 		}
-		if _, wErr := io.WriteString(clientConn, "\r\n"); wErr != nil {
-			ctxt.WarnP("写回响应头结束符失败: %v", wErr)
+		if _, err := io.WriteString(clientConn, "\r\n"); err != nil {
+			ctxt.WarnP("写回响应头结束符失败: %v", err)
 			return false
 		}
 
-		// 写入响应体
-		if resp.Body != nil {
-			isChunked := len(resp.TransferEncoding) > 0 &&
-				strings.EqualFold(resp.TransferEncoding[len(resp.TransferEncoding)-1], "chunked")
+		// WebSocket 处理：使用 origBody 获取底层 ReadWriter
+		// （filterResponse 的 respBodyReader 包装器不实现 Write 方法）
+		if isWebsocket {
+			ctxt.Log_P("Response looks like websocket upgrade.")
+			wsConn, ok := origBody.(io.ReadWriter)
+			if !ok {
+				ctxt.WarnP("Unable to use Websocket connection")
+				return false
+			}
+			proxy.proxyWebsocket(ctxt, wsConn, clientConn)
+			return false
+		}
 
-			if isChunked {
-				chunked := newChunkedWriter(clientConn)
-				if _, cErr := io.Copy(chunked, resp.Body); cErr != nil {
-					ctxt.WarnP("写回 chunked 响应体失败: %v", cErr)
-					return false
-				}
-				if cErr := chunked.Close(); cErr != nil {
-					ctxt.WarnP("关闭 chunked writer 失败: %v", cErr)
-					return false
-				}
-			} else {
-				if _, cErr := io.Copy(clientConn, resp.Body); cErr != nil {
-					ctxt.WarnP("写回响应体失败: %v", cErr)
-					return false
-				}
+		// RFC7230 Body 写回
+		if req.Method == http.MethodHead ||
+			(resp.StatusCode >= 100 && resp.StatusCode < 200) ||
+			resp.StatusCode == http.StatusNoContent ||
+			resp.StatusCode == http.StatusNotModified {
+			// RFC7230: 这些情况不写 Body
+		} else if bodyModified {
+			chunked := newChunkedWriter(clientConn)
+			if _, err := io.Copy(chunked, resp.Body); err != nil {
+				ctxt.WarnP("写回 chunked 响应体失败: %v", err)
+				return false
+			}
+			if err := chunked.Close(); err != nil {
+				ctxt.WarnP("关闭 chunked writer 失败: %v", err)
+				return false
+			}
+			if _, err := io.WriteString(clientConn, "\r\n"); err != nil {
+				ctxt.WarnP("写回 chunked trailer 失败: %v", err)
+				return false
+			}
+		} else {
+			if _, err := io.Copy(clientConn, resp.Body); err != nil {
+				ctxt.WarnP("写回响应体失败: %v", err)
+				return false
 			}
 		}
 

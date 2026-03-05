@@ -1,723 +1,372 @@
-# HTTPS MITM 统一重构计划审查报告（最终版）
+# 修复普通 HTTP 代理及消除 MitmEnabled 的不当耦合 - 修订计划
 
-## 审查结果
+## 一、错误报告分析
 
-### 发现的问题
+### Bug 描述
 
-| 问题                              | 严重程度 | 描述                                          |
-| --------------------------------- | -------- | --------------------------------------------- |
-| **RouterRoundTripper 连接池失效** | 🔴 致命   | 每次 RoundTrip 新建 Transport，连接池无法复用 |
-| **TLS Handshake 阻塞风险**        | 🟡 中     | 使用阻塞式 Handshake()，可能导致协程卡死      |
-| **tunnelSession 清理时机错误**    | 🔴 高     | 新计划使用 goroutine，但 defer 位置错误       |
-| plan.md 未考虑现有 router.go      | 🟢 已修复 | 代码库已有完整路由系统                        |
+1. **Panic/内存溢出错误**：在 `MyHttpHandle`（普通 HTTP GET 代理流程）中，当 `MitmEnabled=true` 时，下游 hook（`actions.go`）尝试访问 `ctx.exchangeCapture.reqBodyCapture` 和 `ctx.exchangeCapture.respBodyCapture`，由于 `exchangeCapture` 为 `nil` 导致 **nil pointer dereference panic**。
 
-### 优化建议
+2. **错误捕获问题**：在 `HttpMitmNoTunnel=false` 时（普通代理模式），HTTP 请求不应该进行 MITM 记录，但当前代码逻辑存在混淆。
 
-1. **修复连接池问题**：RouterRoundTripper 持有全局 Transport，通过 context 传递请求信息
-2. **使用 HandshakeContext**：支持超时和上下文取消
-3. **完全复用现有路由系统**：`mproxy/router.go` 已实现完整的规则引擎
+### 根本原因
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          请求处理流程对比                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  【普通 HTTP 代理】MyHttpHandle (HttpMitmNoTunnel=false)                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 1. 创建 Pcontext，但 **没有调用 StartCapture()**                      │   │
+│  │    → exchangeCapture = nil                                           │   │
+│  │                                                                       │   │
+│  │ 2. filterRequest() → AddTrafficMonitor Hook (actions.go:44-51)       │   │
+│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │    │ if ctx.core_proxy.MitmEnabled {  ← 只判断全局开关             │   │   │
+│  │    │     ctx.exchangeCapture.reqBodyCapture = ...  ← 💥 PANIC!     │   │   │
+│  │    │ }                                                             │   │   │
+│  │    └─────────────────────────────────────────────────────────────┘   │   │
+│  │                                                                       │   │
+│  │ 3. filterResponse() → AddTrafficMonitor Hook (actions.go:119-126)    │   │   │
+│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │    │ if ctx.core_proxy.MitmEnabled {  ← 只判断全局开关             │   │   │
+│  │    │     ctx.exchangeCapture.respBodyCapture = ...  ← 💥 PANIC!    │   │   │
+│  │    │ }                                                             │   │   │
+│  │    └─────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  【HTTP MITM 引擎模式】myHttpHandleWithEngine (HttpMitmNoTunnel=true)         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ 1. 调用 StartCapture(tunnelSession)  ← 初始化 exchangeCapture       │   │
+│  │    → exchangeCapture ≠ nil                                           │   │
+│  │                                                                       │   │
+│  │ 2. filterRequest() → AddTrafficMonitor Hook                          │   │   │
+│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │    │ if ctx.core_proxy.MitmEnabled {  ← 全局开关开启               │   │   │
+│  │    │     ctx.exchangeCapture.reqBodyCapture = ...  ← ✅ 正常       │   │   │
+│  │    │ }                                                             │   │   │
+│  │    └─────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**核心矛盾**：
+
+- `actions.go` **只检查** `ctx.core_proxy.MitmEnabled`，**没有检查** `exchangeCapture` 是否为 `nil`
+- 当 `MitmEnabled=true` 但 `exchangeCapture=nil` 时（普通 HTTP 请求），直接访问字段触发 panic
+- 需要**双重检查**：既检查全局开关（业务逻辑控制），又检查对象是否初始化（防御性编程）
+
+### 配置开关说明
+
+| 配置项             | 作用域       | 说明                                                |
+| ------------------ | ------------ | --------------------------------------------------- |
+| `MitmEnabled`      | **全局开关** | 控制所有 MITM 相关行为（MinIO 上传、Exchange 发送） |
+| `HttpMitmNoTunnel` | **局部开关** | 仅控制 http.go 中的 MITM 引擎模式是否启用           |
 
 ---
 
-## 修订后的实施计划
+## 二、修订后的实施计划
 
-### 第一阶段：添加嗅探辅助结构体
+### 修改 1：修复 actions.go 的判断逻辑（关键修复）
 
-在 `mproxy/https.go` 顶部添加：
+**文件**：`mproxy/actions.go`
+
+**问题**：当前代码（第 44-51 行和第 119-126 行）只检查 `MitmEnabled`，直接访问 `exchangeCapture` 字段而不检查其是否为 `nil`。
+
+**原代码（错误）**：
 
 ```go
-// readBufferedConn 包装连接以支持 Peek 后的正常读取
-type readBufferedConn struct {
-    net.Conn
-    r io.Reader
+// 请求体处理 - 第 44-51 行
+if ctx.core_proxy.MitmEnabled {
+    contentType := req.Header.Get("Content-Type")
+    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+    ctx.exchangeCapture.reqBodyCapture = captReader.Capture  // ← nil panic 风险
+    req.Body = captReader
+} else {
+    req.Body = trafficReader
 }
 
-func (c *readBufferedConn) Read(p []byte) (int, error) {
-    return c.r.Read(p)
+// 响应体处理 - 第 119-126 行
+if ctx.core_proxy.MitmEnabled {
+    contentType := resp.Header.Get("Content-Type")
+    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+    ctx.exchangeCapture.respBodyCapture = captReader.Capture  // ← nil panic 风险
+    resp.Body = captReader
+} else {
+    resp.Body = trafficReader
 }
-
-const _tlsRecordTypeHandshake = byte(22)
 ```
 
----
-
-### 第二阶段：创建 RouterRoundTripper（修复连接池问题）
-
-**新建文件 `mproxy/router_roundtrip.go`**：
+**修复方案**：使用**双重检查** `ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled`。
 
 ```go
-package mproxy
-
-import (
-    "context"
-    "crypto/tls"
-    "net"
-    "net/http"
-    "time"
-)
-
-// contextKey 类型用于 context 中的键，避免冲突
-type contextKey string
-
-const routingReqKey contextKey = "routing_req"
-
-// RouterRoundTripper 将路由逻辑提升到 HTTP 请求层面
-// 复用现有 Router.RouteDial 的规则匹配和拨号逻辑
-type RouterRoundTripper struct {
-    proxy     *CoreHttpServer
-    router    *Router
-    transport *http.Transport // 全局复用的连接池
+// 请求体处理 - 修改后
+if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+    // 双重检查：对象已初始化 AND 全局开关开启
+    contentType := req.Header.Get("Content-Type")
+    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+    ctx.exchangeCapture.reqBodyCapture = captReader.Capture
+    req.Body = captReader
+} else {
+    // 只使用流量统计层
+    req.Body = trafficReader
 }
 
-// NewRouterRoundTripper 创建基于 Router 的 RoundTripper
-// 关键：全局只初始化一次 Transport，保证连接池复用
-func NewRouterRoundTripper(proxy *CoreHttpServer, router *Router) *RouterRoundTripper {
-    rt := &RouterRoundTripper{
-        proxy:  proxy,
-        router: router,
-    }
-
-    // 全局只初始化一次 Transport，这是连接池的核心
-    rt.transport = &http.Transport{
-        DialContext: func(c context.Context, network, addr string) (net.Conn, error) {
-            // 从 context 中提取原始请求，用于路由规则匹配
-            req, ok := c.Value(routingReqKey).(*http.Request)
-            if !ok {
-                // 如果没有请求信息，使用直连作为兜底
-                return net.Dial(network, addr)
-            }
-            // 调用现有路由引擎的 RouteDial 方法
-            return rt.router.RouteDial(req, network, addr)
-        },
-        TLSClientConfig: &tls.Config{
-            InsecureSkipVerify: true, // 根据需要配置
-        },
-        // 连接池配置（这些配置现在会真正生效）
-        MaxIdleConns:          100,
-        MaxIdleConnsPerHost:   10,
-        IdleConnTimeout:       90 * time.Second,
-        TLSHandshakeTimeout:   10 * time.Second,
-        ExpectContinueTimeout: 1 * time.Second,
-    }
-
-    return rt
-}
-
-// RoundTrip 实现 RoundTripper 接口
-func (rt *RouterRoundTripper) RoundTrip(req *http.Request, ctx *Pcontext) (*http.Response, error) {
-    // 将请求放入 context，传递给底层的 DialContext
-    // 这样 DialContext 可以访问请求信息进行路由匹配
-    reqWithCtx := req.WithContext(context.WithValue(req.Context(), routingReqKey, req))
-
-    // 使用全局复用的 Transport 进行请求
-    return rt.transport.RoundTrip(reqWithCtx)
+// 响应体处理 - 修改后
+if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+    // 双重检查：对象已初始化 AND 全局开关开启
+    contentType := resp.Header.Get("Content-Type")
+    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+    ctx.exchangeCapture.respBodyCapture = captReader.Capture
+    resp.Body = captReader
+} else {
+    // 只使用流量统计层
+    resp.Body = trafficReader
 }
 ```
 
-**修复说明**：
+**修复理由**：
 
-- ✅ Transport 在 `NewRouterRoundTripper` 中只创建一次
-- ✅ 连接池配置（`MaxIdleConns` 等）真正生效
-- ✅ 通过 context 传递请求信息给 DialContext
-- ✅ 避免了 FD 泄漏和性能问题
+1. **防止 panic**：`exchangeCapture != nil` 检查确保只在对象已初始化时才访问其字段
+2. **保留全局控制**：`MitmEnabled == true` 确保全局开关仍然有效，不被架空
+3. **防御性编程**：即使逻辑上 `MitmEnabled=true` 时应该有 `exchangeCapture`，也加上了 nil 检查以防御意外情况
 
 ---
 
-### 第三阶段：合并 MITM 分支（修复 TLS Handshake）
+### 修改 2：保留 mitm_exchange.go 的全局开关检查（防御性设计）
 
-**修改 `mproxy/https.go:348` 的 switch 语句**：
+**文件**：`mproxy/mitm_exchange.go`
+
+**分析**：`SendExchange()` 函数（第 104-107 行）开头的 `MitmEnabled` 检查应该**保留**。
+
+**当前代码（保持不变）**：
 
 ```go
-switch strategy.Action {
-case ConnectAccept:
-    // ... 保持不变
-
-case ConnectHTTPMitm, ConnectMitm:
-    // ===== 统一 MITM 处理 =====
-    _, _ = connFromClinet.Write([]byte("HTTP/1.0 200 OK\r\n\r\n"))
-    topctx.Log_P("Starting MITM (HTTP/HTTPS Auto-Detect)")
-
-    go func() {
-        // ===== 关键修复：tunnelSession 清理必须在 goroutine 内部 =====
-        // 这样可以确保清理时机与实际 TCP 连接生命周期一致
-        defer proxy.MarkConnectionClosed(tunnelSession)
-        defer connFromClinet.Close()
-
-        // --- 1. 流量嗅探 ---
-        readBuffer := bufio.NewReader(connFromClinet)
-        peek, _ := readBuffer.Peek(1)
-        isTLS := len(peek) > 0 && peek[0] == _tlsRecordTypeHandshake
-
-        var mitmClientConn net.Conn = &readBufferedConn{Conn: connFromClinet, r: readBuffer}
-
-        // 动态设置协议标识
-        scheme := "http"
-        protocolLabel := "HTTP-MITM"
-
-        if isTLS {
-            scheme = "https"
-            protocolLabel = "HTTPS-MITM"
-
-            tlsConfig := defaultTLSConfig
-            if strategy.TLSConfig != nil {
-                var err error
-                tlsConfig, err = strategy.TLSConfig(host, topctx)
-                if err != nil {
-                    httpError(mitmClientConn, topctx, err)
-                    return
-                }
-            }
-
-            // ===== 修复：使用 HandshakeContext 支持超时和取消 =====
-            tlsConn := tls.Server(mitmClientConn, tlsConfig)
-
-            // 使用 topctx.Req.Context() 作为握手上下文
-            // 当客户端断开时，上下文会自动取消，避免协程卡死
-            if err := tlsConn.HandshakeContext(topctx.Req.Context()); err != nil {
-                topctx.WarnP("TLS 握手失败/超时: %v", err)
-                return
-            }
-            mitmClientConn = tlsConn
-        }
-
-        // --- 2. 请求循环（复用现有 ConnectMitm 逻辑）---
-        reqReader := http1parser.NewRequestReader(proxy.PreventParseHeader, mitmClientConn)
-
-        for !reqReader.IsEOF() {
-            req, err := reqReader.ReadRequest()
-            if err != nil && !errors.Is(err, io.EOF) {
-                topctx.WarnP("协议解析错误: %v", err)
-            }
-            if err != nil {
-                return
-            }
-
-            req.RemoteAddr = r.RemoteAddr
-
-            // 使用动态 scheme 构造 URL
-            if !strings.HasPrefix(req.URL.String(), scheme+"://") {
-                req.URL, err = url.Parse(scheme + "://" + r.Host + req.URL.String())
-            }
-
-            // --- 3. 单次请求处理（完全复用 https.go:733-895）---
-            requestOk := func(req *http.Request) bool {
-                requestContext, finishRequest := context.WithCancel(req.Context())
-                req = req.WithContext(requestContext)
-                defer finishRequest()
-
-                ctxt := &Pcontext{
-                    core_proxy:     proxy,
-                    Req:            req,
-                    parCtx:         topctx,
-                    TrafficCounter: &TrafficCounter{},
-                    Session:        atomic.AddInt64(&proxy.sess, 1),
-                }
-                ctxt.StartCapture(tunnelSession)
-
-                // 注册连接（使用动态 protocolLabel）
-                proxy.Connections.Store(ctxt.Session, &ConnectionInfo{
-                    Session:      ctxt.Session,
-                    ParentSess:   tunnelSession,
-                    Host:         r.Host,
-                    Method:       req.Method,
-                    URL:          req.URL.String(),
-                    RemoteAddr:   r.RemoteAddr,
-                    Protocol:     protocolLabel,  // 动态：HTTP-MITM 或 HTTPS-MITM
-                    StartTime:    time.Now(),
-                    Status:       "Active",
-                    PuploadRef:   &ctxt.parCtx.TrafficCounter.req_sum,
-                    PdownloadRef: &ctxt.parCtx.TrafficCounter.resp_sum,
-                    UploadRef:    &ctxt.TrafficCounter.req_sum,
-                    DownloadRef:  &ctxt.TrafficCounter.resp_sum,
-                    OnClose:      func() { finishRequest() },
-                })
-                defer proxy.MarkConnectionClosed(ctxt.Session)
-
-                ctxt.Req = req
-                req, resp := proxy.filterRequest(req, ctxt)
-                ctxt.CaptureRequest(req)
-
-                if resp == nil {
-                    RemoveProxyHeaders(ctxt, req)
-
-                    // --- 关键：使用 RouterRoundTripper 进行 HTTP 层路由 ---
-                    resp, err = ctxt.RoundTrip(req)
-                    if err != nil {
-                        ctxt.SetCaptureError(err)
-                        ctxt.WarnP("请求失败: %v", err)
-                        httpError(mitmClientConn, ctxt, err)
-                        return false
-                    }
-                }
-
-                // 响应处理（完全复用 https.go:789-895）
-                resp = proxy.filterResponse(resp, ctxt)
-                defer resp.Body.Close()
-
-                // WebSocket 检测
-                isWebsocket := isWebSocketHandshake(resp.Header)
-                if isWebsocket {
-                    ctxt.SetCaptureSkip()
-                }
-                if !isWebsocket && !proxy.ConnectMaintain {
-                    resp.Header.Set("Connection", "close")
-                }
-
-                // 手动写回响应头
-                text := resp.Status
-                statusCode := strconv.Itoa(resp.StatusCode) + " "
-                text = strings.TrimPrefix(text, statusCode)
-                if _, err := io.WriteString(mitmClientConn, "HTTP/1.1"+" "+statusCode+text+"\r\n"); err != nil {
-                    ctxt.WarnP("写响应头失败: %v", err)
-                    return false
-                }
-                if err := resp.Header.Write(mitmClientConn); err != nil {
-                    ctxt.WarnP("写响应头失败: %v", err)
-                    return false
-                }
-                if _, err = io.WriteString(mitmClientConn, "\r\n"); err != nil {
-                    ctxt.WarnP("写响应头结束符失败: %v", err)
-                    return false
-                }
-
-                // WebSocket 处理
-                if isWebsocket {
-                    wsConn, ok := resp.Body.(io.ReadWriter)
-                    if !ok {
-                        ctxt.WarnP("Unable to use Websocket connection")
-                        return false
-                    }
-                    proxy.proxyWebsocket(ctxt, wsConn, mitmClientConn)
-                    proxy.MarkConnectionClosed(ctxt.Session)
-                    return false
-                }
-
-                // 写回响应体
-                if resp.Body != nil {
-                    if _, err := io.Copy(mitmClientConn, resp.Body); err != nil {
-                        ctxt.WarnP("写响应体失败: %v", err)
-                        return false
-                    }
-                }
-
-                return true
-            }
-
-            if !requestOk(req) {
-                return
-            }
-        }
-        topctx.Log_P("Connect Tunnel Normal Exiting on Client EOF")
-    }()
-
-case ConnectReject:
-    // ... 保持不变
+func (ctx *Pcontext) SendExchange() {
+    if !ctx.core_proxy.MitmEnabled {
+        return  // ← 全局开关关闭时，直接返回，不发送任何 Exchange
+    }
+    cap := ctx.exchangeCapture
+    if cap == nil || cap.skipSend || cap.sent {
+        return
+    }
+    // ... 发送 Exchange
 }
 ```
 
-**修复说明**：
+**保持不变的理由**：
 
-- ✅ 使用 `HandshakeContext` 替代 `Handshake`
-- ✅ 支持上下文取消和超时
-- ✅ 避免恶意客户端导致协程卡死
-
----
-
-### 第四阶段：配置 RouterRoundTripper
-
-**修改 `main.go`**：
-
-```go
-func main() {
-    verbose := flag.Bool("v", true, "should every proxy request be logged to stdout")
-    addr := flag.String("addr", ":8080", "proxy listen address")
-    flag.Parse()
-
-    proxy := mproxy.NewCoreHttpSever()
-    proxy.Verbose = *verbose
-    proxy.AllowHTTP2 = false
-    proxy.KeepAcceptEncoding = false
-    proxy.PreventParseHeader = false
-    proxy.KeepDestHeaders = true
-    proxy.ConnectMaintain = true
-    proxy.MitmEnabled = true
-    proxy.HttpMitmNoTunnel = true
-
-    // 使用 LogCollector 包装原有 Logger
-    proxy.Logger = mproxy.NewLogCollector(proxy.Logger)
-
-    // 初始化 MinIO
-    minioConfig := myminio.Config{
-        Endpoint:        "127.0.0.1:9000",
-        AccessKeyID:     "root",
-        SecretAccessKey: "12345678",
-        UseSSL:          false,
-        Bucket:          "bodydata",
-        Enabled:         true,
-    }
-    client, err := myminio.NewClient(minioConfig)
-    if err != nil {
-        log.Printf("警告: MinIO 初始化失败: %v", err)
-    } else {
-        myminio.GlobalClient = client
-        log.Printf("MinIO 存储已启用: %s/%s", minioConfig.Endpoint, minioConfig.Bucket)
-    }
-
-    // 启动 pprof
-    go func() {
-        log.Println("🔍 性能监控 (pprof) 服务已启动: http://localhost:6060/debug/pprof/")
-        if err := http.ListenAndServe(":6060", nil); err != nil {
-            log.Printf("pprof 启动失败: %v", err)
-        }
-    }()
-
-    mproxy.AddTrafficMonitor(proxy)
-
-    // ===== 创建路由引擎 =====
-    router := mproxy.NewRouter(proxy)
-
-    // 注册二级代理节点
-    proxy1, err := mproxy.NewHttpProxyDialer(proxy, "Proxy1", "http://127.0.0.1:7892")
-    if err != nil {
-        log.Printf("警告: 创建 Proxy1 失败: %v", err)
-    } else {
-        router.AddDialer("Proxy1", proxy1)
-    }
-
-    // 配置路由规则
-    router.AddRule(mproxy.DomainKeywordRule("youtube", "google"), "Proxy1")
-    router.AddRule(mproxy.DomainSuffixRule("twitter.com", "x.com"), "Proxy1")
-
-    // ===== 关键：创建并注入 RouterRoundTripper =====
-    routerRT := mproxy.NewRouterRoundTripper(proxy, router)
-
-    // 使用 Hook 为所有请求注入 RouterRoundTripper
-    mproxy.HookOnReq().DoFunc(func(req *http.Request, ctx *mproxy.Pcontext) (*http.Request, *http.Response) {
-        ctx.RoundTripper = routerRT  // 注入自定义 RoundTripper
-        return req, nil
-    })
-
-    // 保留现有的 ConnectWithReqDial 挂载（用于隧道模式）
-    proxy.ConnectWithReqDial = router.RouteDial
-
-    // 启动 WebSocket 控制服务
-    ws := &proxysocket.WebsocketServer{
-        Proxy: proxy,
-        Addr:  ":8000",
-        Secret: "123",
-    }
-    if !ws.StartControlServer() {
-        log.Fatal("websocket server启动失败")
-    }
-
-    s := http.Server{
-        Addr:    *addr,
-        Handler: proxy,
-    }
-    if err := s.ListenAndServe(); err != nil {
-        log.Fatal("服务器错误", err)
-    }
-}
-```
+1. **早期退出优化**：全局开关关闭时立即返回，避免不必要的处理
+2. **防御性保护**：即使 `exchangeCapture` 被错误初始化（非预期情况），也能被全局开关拦截
+3. **语义清晰**：全局开关是最高优先级的控制，应该最先检查
+4. **符合原 plan.md 的意图**：原计划也提到 MitmEnabled 是"总开关"
 
 ---
 
-### 第五阶段：删除冗余代码
+### 修改 3：确认 MyHttpHandle 不需要修改
 
-删除 `mproxy/https.go:437-674` 的整个 `ConnectHTTPMitm` 分支（约 240 行）
+**文件**：`mproxy/http.go` 的 `MyHttpHandle` 函数（第 15-169 行）
 
----
+**分析**：
 
-## 关键文件
+- 当前代码**没有调用** `StartCapture()`、`CaptureRequest()` 或 `SetCaptureError()`
+- 这是**正确的行为**，因为普通 HTTP 代理不应该进行 MITM 捕获
+- 修复 `actions.go` 后，由于 `exchangeCapture` 为 `nil`，`MitmEnabled` 的判断会短路，不会访问 `exchangeCapture` 字段
 
-| 文件                         | 修改类型 | 说明                                  |
-| ---------------------------- | -------- | ------------------------------------- |
-| `mproxy/https.go`            | 修改     | 合并分支、添加嗅探、修复 Handshake    |
-| `mproxy/router_roundtrip.go` | 新增     | RouterRoundTripper 实现（修复连接池） |
-| `mproxy/router.go`           | 不变     | 完全复用现有路由系统                  |
-| `main.go`                    | 修改     | 配置 RouterRoundTripper               |
+**确认**：无需修改 `MyHttpHandle`，当前行为是正确的。
 
 ---
 
-## 架构对比
+## 三、各场景下的行为分析
 
-### 修改前（问题）
+### 场景 1：普通 HTTP 请求（HttpMitmNoTunnel=false）
 
-```
-HTTP 层（仅 HTTPS MITM）:
-    ctxt.RoundTrip → proxy.Transport.RoundTrip → 直连
+| 配置 | exchangeCapture | MitmEnabled | 判断结果             | 行为               |
+| ---- | --------------- | ----------- | -------------------- | ------------------ |
+| 任意 | `nil`           | `false`     | 短路（`nil && ...`） | 只使用流量统计层 ✅ |
+| 任意 | `nil`           | `true`      | 短路（`nil && ...`） | 只使用流量统计层 ✅ |
 
-TCP 层:
-    Router.RouteDial → 建立连接 → 隧道透传
+**结论**：由于 `exchangeCapture` 为 `nil`，无论 `MitmEnabled` 是什么值，都会短路，**不会触发 panic**。
 
-问题：HTTP MITM 无法使用路由规则
-```
+### 场景 2：HTTP MITM 引擎模式（HttpMitmNoTunnel=true）
 
-### 修改后（统一路由）
+| 配置 | exchangeCapture | MitmEnabled | 判断结果                  | 行为               |
+| ---- | --------------- | ----------- | ------------------------- | ------------------ |
+| 正常 | 非 `nil`        | `true`      | `true && true` = `true`   | MinIO 捕获 ✅       |
+| 正常 | 非 `nil`        | `false`     | `true && false` = `false` | 只使用流量统计层 ✅ |
 
-```
-HTTP 层（统一）:
-    ctxt.RoundTrip → RouterRoundTripper.RoundTrip
-                    → 全局 Transport.RoundTrip (连接池复用)
-                    → DialContext (从 context 提取 req)
-                    → Router.RouteDial → 路由规则匹配 → 建立连接
+**结论**：只有在 `exchangeCapture` 已初始化 **且** `MitmEnabled=true` 时才进行 MinIO 捕获。
 
-TCP 层（保持不变）:
-    Router.RouteDial → 建立连接 → 隧道透传
-```
+### 场景 3：HTTPS MITM 模式
 
-**关键修复**：
+| 配置 | exchangeCapture | MitmEnabled | 判断结果                  | 行为               |
+| ---- | --------------- | ----------- | ------------------------- | ------------------ |
+| 正常 | 非 `nil`        | `true`      | `true && true` = `true`   | MinIO 捕获 ✅       |
+| 正常 | 非 `nil`        | `false`     | `true && false` = `false` | 只使用流量统计层 ✅ |
 
-1. ✅ Transport 全局复用，连接池真正生效
-2. ✅ 通过 context 传递请求信息
-3. ✅ 所有 HTTP/HTTPS MITM 流量都经过路由规则
+**结论**：与 HTTP MITM 引擎模式一致。
 
 ---
 
-## 验证方法
+## 四、验证计划
 
-### 1. 单元测试
+### 测试场景 1：普通 HTTP 请求（不触发捕获）
 
-```go
-// 测试连接池复用
-func TestRouterRoundTripperConnPool(t *testing.T) {
-    router := setupTestRouter()
-    rt := NewRouterRoundTripper(proxy, router)
+**配置**：`HttpMitmNoTunnel=false`, `MitmEnabled=true`（**这是之前 panic 的场景**）
 
-    // 发送多个请求到同一主机
-    for i := 0; i < 10; i++ {
-        req := httptest.NewRequest("GET", "http://example.com/test", nil)
-        resp, err := rt.RoundTrip(req, &Pcontext{})
-        require.NoError(t, err)
-        require.NotNil(t, resp)
-        resp.Body.Close()
-    }
-
-    // 验证连接池被复用（而不是每次都新建连接）
-    // 可以通过监控 TCP 连接数量来验证
-}
-
-// 测试 TLS Handshake 超时
-func TestTLSHandshakeTimeout(t *testing.T) {
-    // 模拟一个只发送 TLS 字节后不响应的客户端
-    // 验证 HandshakeContext 会正确超时返回
-}
-```
-
-### 2. 性能测试
+**测试命令**：
 
 ```bash
-# 使用 wrk 或 ab 进行压力测试
-# 验证连接池是否生效（响应时间应该显著降低）
-wrk -t4 -c100 -d30s http://localhost:8080
+curl -x http://localhost:8080 http://baidu.com
 ```
 
-### 3. 集成测试
+**预期结果**：
+
+- ✅ 请求正常转发，**无 panic**
+- ✅ 前端不会收到此请求的 MITM Exchange
+- ✅ MinIO 不会存储此请求的 Body
+
+### 测试场景 2：HTTP MITM 引擎模式（触发捕获）
+
+**配置**：`HttpMitmNoTunnel=true`, `MitmEnabled=true`
+
+**测试命令**：
 
 ```bash
-# 测试 HTTP MITM 路由
-curl -x http://localhost:8080 http://youtube.com --proxy-insecure
-
-# 测试 HTTPS MITM 路由
-curl -x http://localhost:8080 https://twitter.com --proxy-insecure
-
-# 验证日志中的 [路由匹配] 消息
+curl -x http://localhost:8080 http://baidu.com
 ```
 
-### 4. 回归测试清单
+**预期结果**：
 
-- [ ] HTTP MITM 流量正常
-- [ ] HTTPS MITM 流量正常
-- [ ] 路由规则正确匹配
-- [ ] WebSocket 连接正常
-- [ ] 流量统计正确
-- [ ] 连接池复用生效（验证通过监控连接数）
-- [ ] TLS Handshake 超时正常
-- [ ] MinIO 上传正常
-- [ ] 100-continue 请求正常
+- ✅ 请求正常转发，无 panic
+- ✅ 前端收到 MITM Exchange
+- ✅ MinIO 存储请求/响应 Body
+
+### 测试场景 3：全局开关关闭时的 MITM 引擎模式
+
+**配置**：`HttpMitmNoTunnel=true`, `MitmEnabled=false`
+
+**测试命令**：
+
+```bash
+curl -x http://localhost:8080 http://baidu.com
+```
+
+**预期结果**：
+
+- ✅ 请求正常转发（使用 MITM 引擎解密，但不进行 MinIO 存储）
+- ✅ 前端**不会**收到 MITM Exchange（被 `SendExchange()` 的全局开关拦截）
+- ✅ MinIO 不会存储请求/响应 Body
+
+### 测试场景 4：HTTPS MITM 模式
+
+**配置**：`MitmEnabled=true`
+
+**测试命令**：
+
+```bash
+curl -x http://localhost:8080 https://baidu.com
+```
+
+**预期结果**：
+
+- ✅ 请求正常转发，无 panic
+- ✅ 前端收到 MITM Exchange
+- ✅ MinIO 存储请求/响应 Body
 
 ---
 
-## 收益评估
+## 五、关键文件清单
 
-| 指标              | 修改前         | 修改后         | 收益           |
-| ----------------- | -------------- | -------------- | -------------- |
-| 代码行数          | ~910 行        | ~670 行        | -240 行 (-26%) |
-| 分支数量          | 2 个独立分支   | 1 个统一分支   | 逻辑统一       |
-| HTTP MITM 路由    | 不支持         | 完全支持       | 功能增强       |
-| 连接池复用        | 部分           | 完全           | 性能大幅提升   |
-| TLS Handshake     | 阻塞           | 可取消         | 稳定性提升     |
-| 100-continue 处理 | 手动（易出错） | 自动（标准库） | 稳定性提升     |
-| 协议识别          | 端口硬编码     | 字节嗅探       | 准确性提升     |
-
----
-
-## 风险与缓解
-
-| 风险                   | 影响               | 缓解措施                         |
-| ---------------------- | ------------------ | -------------------------------- |
-| context 传递失败       | 路由不生效         | 添加兜底直连逻辑                 |
-| TLS Handshake 超时设置 | 正常握手被中断     | 使用合理的超时时间（10s）        |
-| WebSocket 兼容性       | WebSocket 连接失败 | 完全保留现有 proxyWebsocket 逻辑 |
-| 连接池配置不当         | 连接泄漏           | 充分测试，监控 FD 数量           |
-| tunnelSession 清理时机 | 生命周期不一致     | defer 必须在 goroutine 内部      |
+| 文件                      | 修改类型         | 行号范围          | 说明                                           |
+| ------------------------- | ---------------- | ----------------- | ---------------------------------------------- |
+| `mproxy/actions.go`       | **修改**         | 第 44-51 行       | 请求体处理：添加 `exchangeCapture != nil` 检查 |
+| `mproxy/actions.go`       | **修改**         | 第 119-126 行     | 响应体处理：添加 `exchangeCapture != nil` 检查 |
+| `mproxy/mitm_exchange.go` | **保持不变**     | 第 105-107 行     | 保留全局开关检查（防御性设计）                 |
+| `mproxy/http.go`          | **确认无需修改** | MyHttpHandle 函数 | 当前行为正确                                   |
+| `mproxy/https.go`         | **无需修改**     | HTTPS MITM 流程   | 已调用 StartCapture()                          |
+| `mproxy/ctxt.go`          | **无需修改**     | Pcontext 定义     | exchangeCapture 字段定义                       |
 
 ---
 
-## 关键修复详解
+## 六、风险评估
 
-### 修复 1：tunnelSession 清理时机
+| 修改项                        | 风险等级 | 影响范围                           |
+| ----------------------------- | -------- | ---------------------------------- |
+| actions.go 添加 nil 检查      | **极低** | 纯粹添加防御性检查，不改变现有逻辑 |
+| mitm_exchange.go 保持全局开关 | **无**   | 不修改现有代码                     |
 
-**问题根源**：
-
-- 原 `ConnectMitm` 不使用 goroutine，`defer` 在主线程 for 循环结束后执行 ✅
-- 新计划使用 goroutine，如果 `defer` 在外层，会在 goroutine 启动后立即执行 ❌
-
-**错误代码**：
-
-```go
-case ConnectHTTPMitm, ConnectMitm:
-    defer proxy.MarkConnectionClosed(tunnelSession)  // ❌ 在 switch 语句结束时执行
-    go func() {
-        defer connFromClinet.Close()
-        // ... 长时间处理多个请求
-    }()
-    // 主线程立即返回，defer 执行，tunnelSession 被标记为关闭
-```
-
-**正确代码**：
-
-```go
-case ConnectHTTPMitm, ConnectMitm:
-    go func() {
-        defer proxy.MarkConnectionClosed(tunnelSession)  // ✅ 在 goroutine 退出时执行
-        defer connFromClinet.Close()
-        // ... 长时间处理多个请求
-    }()
-```
-
-### 修复 2：RouterRoundTripper 连接池
-
-**问题根源**：
-
-- 每次 `RoundTrip` 新建 `http.Transport`，连接池无法复用
-- `MaxIdleConns` 等配置完全失效
-- 可能导致 FD 泄漏
-
-**错误代码**：
-
-```go
-func (rt *RouterRoundTripper) RoundTrip(req *http.Request, ctx *Pcontext) (*http.Response, error) {
-    transport := &http.Transport{  // ❌ 每次新建
-        DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-            return rt.router.RouteDial(req, network, addr)
-        },
-    }
-    return transport.RoundTrip(req)
-}
-```
-
-**正确代码**：
-
-```go
-type RouterRoundTripper struct {
-    transport *http.Transport  // ✅ 全局复用
-}
-
-func NewRouterRoundTripper(...) *RouterRoundTripper {
-    rt := &RouterRoundTripper{...}
-    rt.transport = &http.Transport{  // ✅ 只创建一次
-        DialContext: func(c context.Context, network, addr string) (net.Conn, error) {
-            req := c.Value(routingReqKey).(*http.Request)
-            return rt.router.RouteDial(req, network, addr)
-        },
-    }
-    return rt
-}
-```
-
-### 修复 3：TLS Handshake 超时
-
-**问题根源**：
-
-- 阻塞式 `Handshake()` 可能导致协程卡死
-- 恶意客户端只发送 TLS 字节后不响应
-
-**错误代码**：
-
-```go
-if err := tlsConn.Handshake(); err != nil {  // ❌ 阻塞调用
-    return
-}
-```
-
-**正确代码**：
-
-```go
-if err := tlsConn.HandshakeContext(topctx.Req.Context()); err != nil {  // ✅ 支持取消
-    topctx.WarnP("TLS 握手失败/超时: %v", err)
-    return
-}
-```
+**总体风险：极低**
 
 ---
 
-## 附录：修复对比
+## 七、设计原则
 
-### 修复前（错误）
+修复后的代码遵循以下设计原则：
 
-```go
-// ❌ 每次新建 Transport，连接池失效
-func (rt *RouterRoundTripper) RoundTrip(req *http.Request, ctx *Pcontext) (*http.Response, error) {
-    transport := &http.Transport{  // 致命错误！
-        DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-            return rt.router.RouteDial(req, network, addr)
-        },
-        MaxIdleConns: 100, // 完全无效
-    }
-    return transport.RoundTrip(req)
-}
+1. **双重检查模式**：
+   - `exchangeCapture != nil` → 防御性编程，防止 nil pointer panic
+   - `MitmEnabled == true` → 业务逻辑控制，保留全局开关功能
+
+2. **短路求值优化**：
+   - 当 `exchangeCapture == nil` 时，`&&` 运算符会短路，不会评估 `MitmEnabled`
+   - 普通 HTTP 请求（`exchangeCapture == nil`）的性能影响最小
+
+3. **防御性设计**：
+   - `SendExchange()` 开头的 `MitmEnabled` 检查提供最后一道防线
+   - 即使逻辑上应该有 `exchangeCapture`，也加上 nil 检查
+
+4. **向后兼容**：
+   - 不影响现有的 MITM 流程（HTTPS MITM、HTTP MITM 引擎模式）
+   - 全局开关 `MitmEnabled` 的控制能力完全保留
+
+---
+
+## 八、代码变更总结
+
+### actions.go - 请求体处理（第 44-51 行）
+
+```diff
+  // 第二层：MinIO 捕获（仅 MITM 开启时执行）
+- if ctx.core_proxy.MitmEnabled {
++ if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+      contentType := req.Header.Get("Content-Type")
+      captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+      ctx.exchangeCapture.reqBodyCapture = captReader.Capture
+      req.Body = captReader
+  } else {
+      req.Body = trafficReader
+  }
 ```
 
-### 修复后（正确）
+### actions.go - 响应体处理（第 119-126 行）
 
-```go
-// ✅ 全局 Transport，连接池复用
-type RouterRoundTripper struct {
-    transport *http.Transport // 全局复用
-}
-
-func NewRouterRoundTripper(...) *RouterRoundTripper {
-    rt := &RouterRoundTripper{...}
-    rt.transport = &http.Transport{  // 只创建一次
-        DialContext: func(c context.Context, network, addr string) (net.Conn, error) {
-            req := c.Value(routingReqKey).(*http.Request)
-            return rt.router.RouteDial(req, network, addr)
-        },
-        MaxIdleConns: 100, // 真正生效
-    }
-    return rt
-}
-
-func (rt *RouterRoundTripper) RoundTrip(req *http.Request, ctx *Pcontext) (*http.Response, error) {
-    reqWithCtx := req.WithContext(context.WithValue(req.Context(), routingReqKey, req))
-    return rt.transport.RoundTrip(reqWithCtx)  // 复用全局 Transport
-}
+```diff
+  // 第二层：MinIO 捕获（仅 MITM 开启时执行）
+- if ctx.core_proxy.MitmEnabled {
++ if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+      contentType := resp.Header.Get("Content-Type")
+      captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+      ctx.exchangeCapture.respBodyCapture = captReader.Capture
+      resp.Body = captReader
+  } else {
+      resp.Body = trafficReader
+  }
 ```
 
-### TLS Handshake 修复
+### mitm_exchange.go - SendExchange()（保持不变）
 
 ```go
-// ❌ 修复前：阻塞调用
-tlsConn := tls.Server(mitmClientConn, tlsConfig)
-if err := tlsConn.Handshake(); err != nil {  // 可能永久阻塞
-    return
-}
-
-// ✅ 修复后：支持取消
-tlsConn := tls.Server(mitmClientConn, tlsConfig)
-if err := tlsConn.HandshakeContext(topctx.Req.Context()); err != nil {  // 支持超时和取消
-    topctx.WarnP("TLS 握手失败/超时: %v", err)
-    return
+// 保持第 105-107 行的全局开关检查
+func (ctx *Pcontext) SendExchange() {
+    if !ctx.core_proxy.MitmEnabled {
+        return  // ← 保留此防御性检查
+    }
+    cap := ctx.exchangeCapture
+    if cap == nil || cap.skipSend || cap.sent {
+        return
+    }
+    // ... 后续代码保持不变
 }
 ```

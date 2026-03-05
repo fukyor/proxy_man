@@ -112,13 +112,15 @@ func (r *Router) RouteDial(req *http.Request, network, addr string) (net.Conn, e
 	for _, rule := range rules {
 		if rule.Condition.HandleReq(req, ctx) {
 			if dialer, ok := dialers[rule.Target]; ok {
+				// 只有在建立tcp连接时才会打印一次，因为存在连接复用所以并不会每次请求都打印
 				r.proxy.Logger.Printf("INFO: [路由匹配] %s -> %s", addr, rule.Target)
 				return dialer.Dial(network, addr)
 			}
-			r.proxy.Logger.Printf("WARN: [路由] 目标节点 '%s' 不存在，回退默认", rule.Target)
+			r.proxy.Logger.Printf("WARN: [路由匹配] 目标节点 '%s' 不存在，回退Direct", rule.Target)
 			break
 		}
 	}
+	r.proxy.Logger.Printf("WARN: [路由匹配] 未匹配到规则 -> Direct")
 	return defaultDialer.Dial(network, addr)
 }
 
