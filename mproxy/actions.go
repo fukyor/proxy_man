@@ -41,7 +41,7 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 			}
 
 			// 第二层：MinIO 捕获（仅 MITM 开启且当前请求有 exchangeCapture 时执行）
-			if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+			if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled {
 				contentType := req.Header.Get("Content-Type")
 				captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
 				ctx.exchangeCapture.reqBodyCapture = captReader.Capture
@@ -116,7 +116,7 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		}
 
 		// 第二层：MinIO 捕获（仅 MITM 开启且当前请求有 exchangeCapture 时执行）
-		if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
+		if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled {
 			contentType := resp.Header.Get("Content-Type")
 			captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
 			ctx.exchangeCapture.respBodyCapture = captReader.Capture
@@ -180,39 +180,33 @@ func StatusChange(proxy *CoreHttpServer) {
 	})
 }
 
-func AddRouter(proxy *CoreHttpServer) {
-	if proxy.RouteEnable {
-		// 设置默认隧道透传的二级代理, 因为全局代理优先级高所以无法被触发，我们注释掉这个功能
-		//proxy.ConnectDial = DialerFromEnv(proxy)
+// AddRouter 配置路由引擎（配置驱动），返回 Router 实例供 API 热更新
+func AddRouter(proxy *CoreHttpServer, cm *ConfigManager) *Router {
+	router := NewRouter(proxy)
 
-		// 创建路由引擎
-		router := NewRouter(proxy)
-
-		// 注册二级代理节点（示例，按实际环境修改）
-		proxy1, err := NewHttpProxyDialer(proxy, "clash", "http://127.0.0.1:7892")
-		if err != nil {
-			proxy.Logger.Printf("Warn:创建 Proxy1 失败: %v", err)
-		} else {
-			router.AddDialer("clash", proxy1)
-		}
-
-		// 配置路由规则（按优先级从高到低）
-		router.AddRule(DomainKeywordRule("youtube", "google"), "clash")
-		router.AddRule(DomainSuffixRule("twitter.com", "x.com"), "clash")
-		router.AddRule(IPRule("127.0.0.1"), "clash")
-
-		// 规则代理（透明隧道模式使用）
-		proxy.ConnectWithReqDial = router.RouteDial
-
-		// 规则代理 (http，http/https MITM使用) 通过自定义 RoundTrip
-		routerRT := NewRouterRoundTripper(proxy, router)
-		proxy.HookOnReq().DoFunc(func(req *http.Request, ctx *Pcontext) (*http.Request, *http.Response) {
-			if ctx.RoundTripper == nil {
-				ctx.RoundTripper = routerRT
-			}
-			return req, nil
-		})
+	// 从配置加载初始路由
+	cfg := cm.GetConfig()
+	if cfg.RouteEnable {
+		router.ReloadFromConfig(&cfg)
 	}
+
+	// 隧道透传模式路由
+	// 我们必须在这里绑定好动态路由器，在connectDial中决定是否使用
+	proxy.ConnectWithReqDial = router.RouteDial
+
+	// MITM 模式路由（通过自定义 RoundTripper）
+	routerRT := NewRouterRoundTripper(proxy, router)
+	proxy.HookOnReq().DoFunc(func(req *http.Request, ctx *Pcontext) (*http.Request, *http.Response) {
+		if !ctx.core_proxy.Config.GetConfig().RouteEnable {
+			return req, nil
+		}
+		if ctx.RoundTripper == nil {
+			ctx.RoundTripper = routerRT
+		}
+		return req, nil
+	})
+
+	return router
 }
 
 func HttpsMitmMode(proxy *CoreHttpServer) {

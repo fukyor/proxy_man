@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"sync"
 	"log"
+	"net/http"
+	"proxy_man/mproxy"
 	"proxy_man/myminio"
+	"sync"
+
 	"github.com/gorilla/websocket"
 	"github.com/rs/cors"
-	"proxy_man/mproxy"
 )
 
 var upgrader = websocket.Upgrader{
@@ -44,18 +45,18 @@ type WebSocketHub struct {
 var hub *WebSocketHub
 
 type WebsocketServer struct {
-	Proxy *mproxy.CoreHttpServer
-	Addr string
+	Proxy  *mproxy.CoreHttpServer
+	Addr   string
 	Secret string
 }
 
-
 // 启动控制服务器
-func (ws *WebsocketServer) StartControlServer() bool {
+func (ws *WebsocketServer) StartControlServer(cm *mproxy.ConfigManager, router *mproxy.Router) bool {
 	hub = &WebSocketHub{proxy: ws.Proxy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/start", ws.loginHandler(ws.handleWebSocket))
 	mux.HandleFunc("/api/storage/download", myminio.HandleDownload) // MinIO 下载 API
+	mux.HandleFunc("/api/config", ws.handleConfig(cm, router))      // 配置管理 API
 
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -71,7 +72,7 @@ func (ws *WebsocketServer) StartControlServer() bool {
 	hub.StartMitmDetailPusher()
 
 	var err error
-	go func(){
+	go func() {
 		err = http.ListenAndServe(ws.Addr, corsMiddleware.Handler(mux))
 	}()
 	// 通道有两种架构，非阻塞和阻塞通道，这里需要阻塞通道
@@ -135,6 +136,53 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 				ws.Proxy.MarkConnectionClosed(key.(int64))
 				return true
 			})
+		case "closeConnection":
+			idFloat, ok := msg["id"].(float64)
+			if !ok {
+				break
+			}
+			id := int64(idFloat)
+			// 先关闭所有子连接（对子连接调用时 Range 不会匹配到任何项）
+			hub.proxy.Connections.Range(func(key, value any) bool {
+				info := value.(*mproxy.ConnectionInfo)
+				if info.ParentSess == id {
+					hub.proxy.CloseAndRemoveConnection(info.Session)
+				}
+				return true
+			})
+			// 关闭目标连接自身
+			hub.proxy.CloseAndRemoveConnection(id)
+		}
+	}
+}
+
+// handleConfig 处理代理配置的 GET/POST 请求
+func (ws *WebsocketServer) handleConfig(cm *mproxy.ConfigManager, router *mproxy.Router) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case "GET":
+			cfg := cm.GetConfig()
+			json.NewEncoder(w).Encode(cfg)
+
+		case "POST":
+			var updated mproxy.ServerConfig
+			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := cm.UpdateConfig(&updated); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// 热重载路由
+			if updated.RouteEnable {
+				router.ReloadFromConfig(&updated)
+			}
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
 }

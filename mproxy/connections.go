@@ -33,3 +33,14 @@ func (proxy *CoreHttpServer) MarkConnectionClosed(session int64) {
 		info.MarkClosed()
 	}
 }
+
+// CloseAndRemoveConnection 立即关闭并删除指定连接（手动关闭，跳过墓碑期）
+func (proxy *CoreHttpServer) CloseAndRemoveConnection(session int64) {
+	if value, ok := proxy.Connections.Load(session); ok {
+		info := value.(*ConnectionInfo)
+		if info.OnClose != nil {
+			info.OnClose()
+		}
+		proxy.Connections.Delete(session)
+	}
+}

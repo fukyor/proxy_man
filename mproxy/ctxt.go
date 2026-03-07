@@ -57,7 +57,7 @@ func (ctx *Pcontext) WarnP(msg string, argv ...any) {
 }
 
 func (ctx *Pcontext) Log_P(msg string, argv ...any){
-	if ctx.core_proxy.Verbose == true{
+	if ctx.core_proxy.Config.GetConfig().Verbose {
 		ctx.printf("INFO: "+msg, argv...)
 	}
 }

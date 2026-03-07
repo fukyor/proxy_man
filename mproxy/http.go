@@ -14,7 +14,7 @@ import (
 
 func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request) {
 	// ========== 新增：TCP 转发引擎模式 ==========
-	if proxy.HttpMitmNoTunnel {
+	if proxy.Config.GetConfig().HttpMitmNoTunnel {
 		proxy.myHttpHandleWithEngine(w, r)
 		return
 	}
@@ -143,10 +143,10 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		resp.Header.Del("Content-Length")
 	}
 	// 封装响应头
-	if !isWebsocket && !proxy.ConnectMaintain {
+	if !isWebsocket && !proxy.Config.GetConfig().ConnectMaintain {
 		resp.Header.Set("Connection", "close")
 	}
-	buildHeaders(w.Header(), resp.Header, proxy.KeepDestHeaders)
+	buildHeaders(w.Header(), resp.Header, proxy.Config.GetConfig().KeepDestHeaders)
 	w.WriteHeader(resp.StatusCode)
 
 	var bodyWriter io.Writer = w
@@ -212,6 +212,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		Status:      "Active",
 		UploadRef:   &topctx.TrafficCounter.req_sum,
 		DownloadRef: &topctx.TrafficCounter.resp_sum,
+		OnClose:     func() { clientConn.Close() },
 	})
 	defer proxy.MarkConnectionClosed(tunnelSession)
 	// ========== 虚拟隧道创建结束 ==========
@@ -311,7 +312,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 			resp.Header.Set("Transfer-Encoding", "chunked")
 		}
 
-		if !isWebsocket && !proxy.ConnectMaintain {
+		if !isWebsocket && !proxy.Config.GetConfig().ConnectMaintain {
 			resp.Header.Set("Connection", "close")
 		}
 
@@ -391,7 +392,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 	// 但这里没有connect请求，所以Go标准库第一次读取时会读取到client大量的有效数据并缓存。此时劫持连接后，
 	// bufrw中存在大量缓存的有效数据。我们必须把他们一起读出来，所以这里我们创建了NewRequestReaderWithBufio。
 	reqReader := http1parser.NewRequestReaderWithBufio(
-		proxy.PreventParseHeader,
+		proxy.Config.GetConfig().PreventParseHeader,
 		clientConn,
 		bufrw.Reader,
 	)

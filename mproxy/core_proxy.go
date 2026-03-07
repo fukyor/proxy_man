@@ -2,12 +2,12 @@ package mproxy
 
 import (
 	//"net"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"io"
 	"regexp"
-	"net"
 	"sync"
 )
 
@@ -16,29 +16,20 @@ import (
 就和proxylab代理服务器一样，当accept一个socket后，立马就要openclientfd。
 然后处理socket数据并通过clientfd转发。
 */
-type CoreHttpServer struct{
-	Transport *http.Transport  // 作为client端转发请求
-	DirectHandler http.Handler
-	reqHandlers []ReqHandler    // 封装请求过滤器
-	respHandlers []RespHandler	// 封装响应过滤器
-	httpsHandlers []HttpsHandler // 连接策略选择器
-	ConnectDial        func(network string, addr string) (net.Conn, error) // 默认二级代理
+type CoreHttpServer struct {
+	Transport          *http.Transport // 作为client端转发请求
+	DirectHandler      http.Handler
+	reqHandlers        []ReqHandler                                                           // 封装请求过滤器
+	respHandlers       []RespHandler                                                          // 封装响应过滤器
+	httpsHandlers      []HttpsHandler                                                         // 连接策略选择器
+	ConnectDial        func(network string, addr string) (net.Conn, error)                    // 默认二级代理
 	ConnectWithReqDial func(req *http.Request, network string, addr string) (net.Conn, error) // 规则代理
 
 	ConnectionErrHandler func(conn io.Writer, ctx *Pcontext, err error)
 
 	Logger Logger
-	Verbose bool
-	sess	int64 // 全局日志ID，每来一个请求都加1
-
-	AllowHTTP2 bool
-	PreventParseHeader bool // 是否保使用用户的非标头部，默认false。除了RPC，一般不会需要非标头部
-	KeepDestHeaders bool  	// 是否保留已设置的响应头，默认true。保证自己的响应头能够正常被添加
-	KeepAcceptEncoding bool	// 保留用户请求编码格式，默认false。除非必须要特定编码格式，否则保持为false让roundtrip决定。
-	ConnectMaintain bool 	// 是否持久维持隧道，默认false。客户端如果支持主动断开连接，则可以为ture
-	MitmEnabled         bool // MITM 全局开关，开启后根据端口自动选择 MITM 模式
-	HttpMitmNoTunnel bool // 是否在 HTTP 普通代理中使用 TCP 转发引擎（类似 HTTP-MITM）
-	RouteEnable bool // 是否开启规则代理
+	Config *ConfigManager // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
+	sess   int64          // 全局日志ID，每来一个请求都加1
 
 	Connections sync.Map // int64 (Session) -> *ConnectionInfo
 }
@@ -75,7 +66,7 @@ func buildHeaders(dst, src http.Header, keepDestHeaders bool) {
 func RemoveProxyHeaders(ctx *Pcontext, r *http.Request) {
 	r.RequestURI = "" // RequestURI是服务器字段，proxy作为客户端发送需要清空，由http.roundtrip根据r.Url自动填充
 	ctx.Log_P("Sending request %v %v", r.Method, r.URL.String())
-	if !ctx.core_proxy.KeepAcceptEncoding { 
+	if !ctx.core_proxy.Config.GetConfig().KeepAcceptEncoding {
 		r.Header.Del("Accept-Encoding")
 	}
 	r.Header.Del("Proxy-Connection")
@@ -105,32 +96,30 @@ func (proxy *CoreHttpServer) filterRequest(r *http.Request, ctx *Pcontext) (req 
 func (proxy *CoreHttpServer) filterResponse(respOrig *http.Response, ctx *Pcontext) (resp *http.Response) {
 	resp = respOrig
 	for _, h := range proxy.respHandlers {
-		ctx.Resp = resp  // 每次在ctx中迭代上一次的处理后的resp
+		ctx.Resp = resp // 每次在ctx中迭代上一次的处理后的resp
 		resp = h.Handle(resp, ctx)
 	}
 	return
 }
 
-
-func (proxy *CoreHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request){
-	if r.Method == http.MethodConnect{
+func (proxy *CoreHttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
 		//调用https处理器
 		proxy.MyHttpsHandle(w, r)
-	}else{
-		//调用http处理器, 
+	} else {
+		//调用http处理器,
 		proxy.MyHttpHandle(w, r)
-		
+
 	}
 }
 
-
-func NewCoreHttpSever() *CoreHttpServer{ 
+func NewCoreHttpSever() *CoreHttpServer {
 	core_proxy := &CoreHttpServer{
 		Logger: log.New(os.Stderr, "", log.LstdFlags),
 		DirectHandler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "非代理请求This is a proxy server. Does not respond to non-proxy requests.", http.StatusInternalServerError)
 		}),
-		// 自定义tr用于代理发送请求
+		// 默认tr用于代理发送请求
 		Transport: &http.Transport{
 			TLSClientConfig: tlsClientSkipVerify,
 		},

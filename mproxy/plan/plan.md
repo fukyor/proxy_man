@@ -1,372 +1,316 @@
-# 修复普通 HTTP 代理及消除 MitmEnabled 的不当耦合 - 修订计划
+# 添加详细连接页面单条连接关闭功能 - 修订计划
 
-## 一、错误报告分析
+## 上下文
 
-### Bug 描述
+用户需求：在前端"详细连接"页面每个连接条目末尾添加"小红叉"按钮，点击后关闭指定连接。
 
-1. **Panic/内存溢出错误**：在 `MyHttpHandle`（普通 HTTP GET 代理流程）中，当 `MitmEnabled=true` 时，下游 hook（`actions.go`）尝试访问 `ctx.exchangeCapture.reqBodyCapture` 和 `ctx.exchangeCapture.respBodyCapture`，由于 `exchangeCapture` 为 `nil` 导致 **nil pointer dereference panic**。
+**关键要求**：
 
-2. **错误捕获问题**：在 `HttpMitmNoTunnel=false` 时（普通代理模式），HTTP 请求不应该进行 MITM 记录，但当前代码逻辑存在混淆。
+1. 关闭父隧道时，同时关闭其所有子连接
+2. 关闭子连接时，不影响父隧道
+3. 关闭包括：断开底层连接（`OnClose()`）和清除连接记录
 
-### 根本原因
+4. **墓碑机制保留**：系统正常关闭仍使用 2.5 秒墓碑期，但手动关闭时需立竿见影
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          请求处理流程对比                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  【普通 HTTP 代理】MyHttpHandle (HttpMitmNoTunnel=false)                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ 1. 创建 Pcontext，但 **没有调用 StartCapture()**                      │   │
-│  │    → exchangeCapture = nil                                           │   │
-│  │                                                                       │   │
-│  │ 2. filterRequest() → AddTrafficMonitor Hook (actions.go:44-51)       │   │
-│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
-│  │    │ if ctx.core_proxy.MitmEnabled {  ← 只判断全局开关             │   │   │
-│  │    │     ctx.exchangeCapture.reqBodyCapture = ...  ← 💥 PANIC!     │   │   │
-│  │    │ }                                                             │   │   │
-│  │    └─────────────────────────────────────────────────────────────┘   │   │
-│  │                                                                       │   │
-│  │ 3. filterResponse() → AddTrafficMonitor Hook (actions.go:119-126)    │   │   │
-│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
-│  │    │ if ctx.core_proxy.MitmEnabled {  ← 只判断全局开关             │   │   │
-│  │    │     ctx.exchangeCapture.respBodyCapture = ...  ← 💥 PANIC!    │   │   │
-│  │    │ }                                                             │   │   │
-│  │    └─────────────────────────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  【HTTP MITM 引擎模式】myHttpHandleWithEngine (HttpMitmNoTunnel=true)         │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ 1. 调用 StartCapture(tunnelSession)  ← 初始化 exchangeCapture       │   │
-│  │    → exchangeCapture ≠ nil                                           │   │
-│  │                                                                       │   │
-│  │ 2. filterRequest() → AddTrafficMonitor Hook                          │   │   │
-│  │    ┌─────────────────────────────────────────────────────────────┐   │   │
-│  │    │ if ctx.core_proxy.MitmEnabled {  ← 全局开关开启               │   │   │
-│  │    │     ctx.exchangeCapture.reqBodyCapture = ...  ← ✅ 正常       │   │   │
-│  │    │ }                                                             │   │   │
-│  │    └─────────────────────────────────────────────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**核心矛盾**：
-
-- `actions.go` **只检查** `ctx.core_proxy.MitmEnabled`，**没有检查** `exchangeCapture` 是否为 `nil`
-- 当 `MitmEnabled=true` 但 `exchangeCapture=nil` 时（普通 HTTP 请求），直接访问字段触发 panic
-- 需要**双重检查**：既检查全局开关（业务逻辑控制），又检查对象是否初始化（防御性编程）
-
-### 配置开关说明
-
-| 配置项             | 作用域       | 说明                                                |
-| ------------------ | ------------ | --------------------------------------------------- |
-| `MitmEnabled`      | **全局开关** | 控制所有 MITM 相关行为（MinIO 上传、Exchange 发送） |
-| `HttpMitmNoTunnel` | **局部开关** | 仅控制 http.go 中的 MITM 引擎模式是否启用           |
+**设计决策**：采用"即时墓碑"方案——在删除前先更新 `Status = "Closed"` 和 `EndTime`，然后立即 `Delete()`。这样既满足用户期望（连接立即消失），又保留了完整的状态标记用于审计和调试。
 
 ---
 
-## 二、修订后的实施计划
+## 后端修改 (Go)
 
-### 修改 1：修复 actions.go 的判断逻辑（关键修复）
+### 文件：`proxysocket/proxy.go`
 
-**文件**：`mproxy/actions.go`
+#### 修改位置：`handleWebSocket` 函数的 switch 语句（约第 128-139 行）
 
-**问题**：当前代码（第 44-51 行和第 119-126 行）只检查 `MitmEnabled`，直接访问 `exchangeCapture` 字段而不检查其是否为 `nil`。
-
-**原代码（错误）**：
+**新增 `case "closeConnection"` 分支**：
 
 ```go
-// 请求体处理 - 第 44-51 行
-if ctx.core_proxy.MitmEnabled {
-    contentType := req.Header.Get("Content-Type")
-    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
-    ctx.exchangeCapture.reqBodyCapture = captReader.Capture  // ← nil panic 风险
-    req.Body = captReader
-} else {
-    req.Body = trafficReader
-}
-
-// 响应体处理 - 第 119-126 行
-if ctx.core_proxy.MitmEnabled {
-    contentType := resp.Header.Get("Content-Type")
-    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
-    ctx.exchangeCapture.respBodyCapture = captReader.Capture  // ← nil panic 风险
-    resp.Body = captReader
-} else {
-    resp.Body = trafficReader
-}
-```
-
-**修复方案**：使用**双重检查** `ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled`。
-
-```go
-// 请求体处理 - 修改后
-if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
-    // 双重检查：对象已初始化 AND 全局开关开启
-    contentType := req.Header.Get("Content-Type")
-    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
-    ctx.exchangeCapture.reqBodyCapture = captReader.Capture
-    req.Body = captReader
-} else {
-    // 只使用流量统计层
-    req.Body = trafficReader
-}
-
-// 响应体处理 - 修改后
-if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
-    // 双重检查：对象已初始化 AND 全局开关开启
-    contentType := resp.Header.Get("Content-Type")
-    captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
-    ctx.exchangeCapture.respBodyCapture = captReader.Capture
-    resp.Body = captReader
-} else {
-    // 只使用流量统计层
-    resp.Body = trafficReader
-}
-```
-
-**修复理由**：
-
-1. **防止 panic**：`exchangeCapture != nil` 检查确保只在对象已初始化时才访问其字段
-2. **保留全局控制**：`MitmEnabled == true` 确保全局开关仍然有效，不被架空
-3. **防御性编程**：即使逻辑上 `MitmEnabled=true` 时应该有 `exchangeCapture`，也加上了 nil 检查以防御意外情况
-
----
-
-### 修改 2：保留 mitm_exchange.go 的全局开关检查（防御性设计）
-
-**文件**：`mproxy/mitm_exchange.go`
-
-**分析**：`SendExchange()` 函数（第 104-107 行）开头的 `MitmEnabled` 检查应该**保留**。
-
-**当前代码（保持不变）**：
-
-```go
-func (ctx *Pcontext) SendExchange() {
-    if !ctx.core_proxy.MitmEnabled {
-        return  // ← 全局开关关闭时，直接返回，不发送任何 Exchange
+case "closeConnection":
+    // 解析连接 ID
+    idFloat, ok := msg["id"].(float64)
+    if !ok {
+        break
     }
-    cap := ctx.exchangeCapture
-    if cap == nil || cap.skipSend || cap.sent {
-        return
+    id := int64(idFloat)
+
+    // 查找目标连接
+    value, ok := hub.proxy.Connections.Load(id)
+    if !ok {
+        break
     }
-    // ... 发送 Exchange
-}
+    targetInfo := value.(*mproxy.ConnectionInfo)
+
+    // 判断是否为父隧道（ParentSess == 0 表示父隧道）
+    isParent := targetInfo.ParentSess == 0
+
+    // 收集需要关闭的 ID 列表
+    toClose := []int64{id}
+
+    if isParent {
+        // 父隧道：找出所有子连接
+        hub.proxy.Connections.Range(func(key, value any) bool {
+            info := value.(*mproxy.ConnectionInfo)
+            if info.ParentSess == id && info.Session != id {
+                toClose = append(toClose, info.Session)
+            }
+            return true
+        })
+    }
+
+    // 关闭所有收集的连接
+    for _, closeId := range toClose {
+        if val, ok := hub.proxy.Connections.Load(closeId); ok {
+            info := val.(*mproxy.ConnectionInfo)
+            // 1. 调用 OnClose() 断开底层连接
+            if info.OnClose != nil {
+                info.OnClose()
+            }
+            // 2. 即时墓碑：更新状态和时间（用于日志/审计）
+            info.Status = "Closed"
+            info.EndTime = time.Now()
+            // 3. 立即物理删除（用户主动关闭，无需等待墓碑期）
+            hub.proxy.Connections.Delete(closeId)
+        }
+    }
 ```
 
-**保持不变的理由**：
+**注意事项**：
 
-1. **早期退出优化**：全局开关关闭时立即返回，避免不必要的处理
-2. **防御性保护**：即使 `exchangeCapture` 被错误初始化（非预期情况），也能被全局开关拦截
-3. **语义清晰**：全局开关是最高优先级的控制，应该最先检查
-4. **符合原 plan.md 的意图**：原计划也提到 MitmEnabled 是"总开关"
-
----
-
-### 修改 3：确认 MyHttpHandle 不需要修改
-
-**文件**：`mproxy/http.go` 的 `MyHttpHandle` 函数（第 15-169 行）
-
-**分析**：
-
-- 当前代码**没有调用** `StartCapture()`、`CaptureRequest()` 或 `SetCaptureError()`
-- 这是**正确的行为**，因为普通 HTTP 代理不应该进行 MITM 捕获
-- 修复 `actions.go` 后，由于 `exchangeCapture` 为 `nil`，`MitmEnabled` 的判断会短路，不会访问 `exchangeCapture` 字段
-
-**确认**：无需修改 `MyHttpHandle`，当前行为是正确的。
+- 需要在文件开头导入 `"time"` 包（如果没有）
+- 父隧道判断：`ParentSess == 0`（而非计划中的 `ParentSess == id`）
+- 子连接查找条件：`info.ParentSess == id && info.Session != id`
 
 ---
 
-## 三、各场景下的行为分析
+## 前端修改 (Vue)
 
-### 场景 1：普通 HTTP 请求（HttpMitmNoTunnel=false）
+### 文件：`src/stores/websocket.js`
 
-| 配置 | exchangeCapture | MitmEnabled | 判断结果             | 行为               |
-| ---- | --------------- | ----------- | -------------------- | ------------------ |
-| 任意 | `nil`           | `false`     | 短路（`nil && ...`） | 只使用流量统计层 ✅ |
-| 任意 | `nil`           | `true`      | 短路（`nil && ...`） | 只使用流量统计层 ✅ |
+#### 修改位置：return 语句（约第 316-335 行）
 
-**结论**：由于 `exchangeCapture` 为 `nil`，无论 `MitmEnabled` 是什么值，都会短路，**不会触发 panic**。
+**1. 新增 `closeConnection` 方法**（在 `closeAllConnections` 函数后添加）：
 
-### 场景 2：HTTP MITM 引擎模式（HttpMitmNoTunnel=true）
-
-| 配置 | exchangeCapture | MitmEnabled | 判断结果                  | 行为               |
-| ---- | --------------- | ----------- | ------------------------- | ------------------ |
-| 正常 | 非 `nil`        | `true`      | `true && true` = `true`   | MinIO 捕获 ✅       |
-| 正常 | 非 `nil`        | `false`     | `true && false` = `false` | 只使用流量统计层 ✅ |
-
-**结论**：只有在 `exchangeCapture` 已初始化 **且** `MitmEnabled=true` 时才进行 MinIO 捕获。
-
-### 场景 3：HTTPS MITM 模式
-
-| 配置 | exchangeCapture | MitmEnabled | 判断结果                  | 行为               |
-| ---- | --------------- | ----------- | ------------------------- | ------------------ |
-| 正常 | 非 `nil`        | `true`      | `true && true` = `true`   | MinIO 捕获 ✅       |
-| 正常 | 非 `nil`        | `false`     | `true && false` = `false` | 只使用流量统计层 ✅ |
-
-**结论**：与 HTTP MITM 引擎模式一致。
-
----
-
-## 四、验证计划
-
-### 测试场景 1：普通 HTTP 请求（不触发捕获）
-
-**配置**：`HttpMitmNoTunnel=false`, `MitmEnabled=true`（**这是之前 panic 的场景**）
-
-**测试命令**：
-
-```bash
-curl -x http://localhost:8080 http://baidu.com
-```
-
-**预期结果**：
-
-- ✅ 请求正常转发，**无 panic**
-- ✅ 前端不会收到此请求的 MITM Exchange
-- ✅ MinIO 不会存储此请求的 Body
-
-### 测试场景 2：HTTP MITM 引擎模式（触发捕获）
-
-**配置**：`HttpMitmNoTunnel=true`, `MitmEnabled=true`
-
-**测试命令**：
-
-```bash
-curl -x http://localhost:8080 http://baidu.com
-```
-
-**预期结果**：
-
-- ✅ 请求正常转发，无 panic
-- ✅ 前端收到 MITM Exchange
-- ✅ MinIO 存储请求/响应 Body
-
-### 测试场景 3：全局开关关闭时的 MITM 引擎模式
-
-**配置**：`HttpMitmNoTunnel=true`, `MitmEnabled=false`
-
-**测试命令**：
-
-```bash
-curl -x http://localhost:8080 http://baidu.com
-```
-
-**预期结果**：
-
-- ✅ 请求正常转发（使用 MITM 引擎解密，但不进行 MinIO 存储）
-- ✅ 前端**不会**收到 MITM Exchange（被 `SendExchange()` 的全局开关拦截）
-- ✅ MinIO 不会存储请求/响应 Body
-
-### 测试场景 4：HTTPS MITM 模式
-
-**配置**：`MitmEnabled=true`
-
-**测试命令**：
-
-```bash
-curl -x http://localhost:8080 https://baidu.com
-```
-
-**预期结果**：
-
-- ✅ 请求正常转发，无 panic
-- ✅ 前端收到 MITM Exchange
-- ✅ MinIO 存储请求/响应 Body
-
----
-
-## 五、关键文件清单
-
-| 文件                      | 修改类型         | 行号范围          | 说明                                           |
-| ------------------------- | ---------------- | ----------------- | ---------------------------------------------- |
-| `mproxy/actions.go`       | **修改**         | 第 44-51 行       | 请求体处理：添加 `exchangeCapture != nil` 检查 |
-| `mproxy/actions.go`       | **修改**         | 第 119-126 行     | 响应体处理：添加 `exchangeCapture != nil` 检查 |
-| `mproxy/mitm_exchange.go` | **保持不变**     | 第 105-107 行     | 保留全局开关检查（防御性设计）                 |
-| `mproxy/http.go`          | **确认无需修改** | MyHttpHandle 函数 | 当前行为正确                                   |
-| `mproxy/https.go`         | **无需修改**     | HTTPS MITM 流程   | 已调用 StartCapture()                          |
-| `mproxy/ctxt.go`          | **无需修改**     | Pcontext 定义     | exchangeCapture 字段定义                       |
-
----
-
-## 六、风险评估
-
-| 修改项                        | 风险等级 | 影响范围                           |
-| ----------------------------- | -------- | ---------------------------------- |
-| actions.go 添加 nil 检查      | **极低** | 纯粹添加防御性检查，不改变现有逻辑 |
-| mitm_exchange.go 保持全局开关 | **无**   | 不修改现有代码                     |
-
-**总体风险：极低**
-
----
-
-## 七、设计原则
-
-修复后的代码遵循以下设计原则：
-
-1. **双重检查模式**：
-   - `exchangeCapture != nil` → 防御性编程，防止 nil pointer panic
-   - `MitmEnabled == true` → 业务逻辑控制，保留全局开关功能
-
-2. **短路求值优化**：
-   - 当 `exchangeCapture == nil` 时，`&&` 运算符会短路，不会评估 `MitmEnabled`
-   - 普通 HTTP 请求（`exchangeCapture == nil`）的性能影响最小
-
-3. **防御性设计**：
-   - `SendExchange()` 开头的 `MitmEnabled` 检查提供最后一道防线
-   - 即使逻辑上应该有 `exchangeCapture`，也加上 nil 检查
-
-4. **向后兼容**：
-   - 不影响现有的 MITM 流程（HTTPS MITM、HTTP MITM 引擎模式）
-   - 全局开关 `MitmEnabled` 的控制能力完全保留
-
----
-
-## 八、代码变更总结
-
-### actions.go - 请求体处理（第 44-51 行）
-
-```diff
-  // 第二层：MinIO 捕获（仅 MITM 开启时执行）
-- if ctx.core_proxy.MitmEnabled {
-+ if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
-      contentType := req.Header.Get("Content-Type")
-      captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
-      ctx.exchangeCapture.reqBodyCapture = captReader.Capture
-      req.Body = captReader
-  } else {
-      req.Body = trafficReader
+```javascript
+/**
+ * 关闭指定连接
+ * @param {number} id - 连接 ID
+ */
+function closeConnection(id) {
+  if (socket.value?.readyState === WebSocket.OPEN) {
+    socket.value.send(JSON.stringify({ action: 'closeConnection', id }))
   }
-```
-
-### actions.go - 响应体处理（第 119-126 行）
-
-```diff
-  // 第二层：MinIO 捕获（仅 MITM 开启时执行）
-- if ctx.core_proxy.MitmEnabled {
-+ if ctx.exchangeCapture != nil && ctx.core_proxy.MitmEnabled {
-      contentType := resp.Header.Get("Content-Type")
-      captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
-      ctx.exchangeCapture.respBodyCapture = captReader.Capture
-      resp.Body = captReader
-  } else {
-      resp.Body = trafficReader
-  }
-```
-
-### mitm_exchange.go - SendExchange()（保持不变）
-
-```go
-// 保持第 105-107 行的全局开关检查
-func (ctx *Pcontext) SendExchange() {
-    if !ctx.core_proxy.MitmEnabled {
-        return  // ← 保留此防御性检查
-    }
-    cap := ctx.exchangeCapture
-    if cap == nil || cap.skipSend || cap.sent {
-        return
-    }
-    // ... 后续代码保持不变
 }
 ```
+
+**2. 在 return 语句中导出**：
+
+```javascript
+return {
+  socket,
+  isConnected,
+  subscriptions,
+  trafficHistory,
+  connections,
+  logs,
+  mitmExchanges,
+  apiUrl,
+  connect,
+  disconnect,
+  updateSubscriptions,
+  closeAllConnections,
+  closeConnection,        // 新增
+  subscribeTraffic,
+  subscribeConnections,
+  subscribeLogs,
+  clearLogs,
+  subscribeMITM,
+  clearMitmExchanges
+}
+```
+
+---
+
+### 文件：`src/views/Connections.vue`
+
+#### 修改位置 1：CSS Grid 布局（约第 463 行）
+
+**修改 `.conn-grid-row` 的 `grid-template-columns`**：
+
+```css
+.conn-grid-row {
+  display: grid;
+  /* 末尾新增 50px 操作列 */
+  grid-template-columns: 100px 80px 200px 1fr 120px 80px 80px 50px;
+  align-items: center;
+  color: #cba376;
+}
+```
+
+#### 修改位置 2：表头（约第 40-70 行）
+
+**在 `.thead-row` 末尾新增表头格子**：
+
+```html
+<div class="conn-grid-row thead-row">
+  <div @click="handleSort('id')" class="th sortable">
+    <span class="expand-header-placeholder"></span>
+    ID
+    <span class="sort-icon" v-if="sortBy === 'id'">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
+  </div>
+  <!-- 其他表头... -->
+  <div class="th">操作</div>  <!-- 新增 -->
+</div>
+```
+
+#### 修改位置 3：数据行（约第 92-126 行）
+
+**在 `.data-row` 末尾新增关闭按钮**：
+
+```html
+<div
+  class="conn-grid-row data-row"
+  :class="{
+    'parent-row': sortedConnections[virtualRow.index].isParent,
+    'child-row': !sortedConnections[virtualRow.index].isParent
+  }"
+>
+  <div class="td">
+    <span
+      v-if="sortedConnections[virtualRow.index].isParent && hasChildren(sortedConnections[virtualRow.index].id)"
+      @click.stop="toggleExpand(sortedConnections[virtualRow.index].id)"
+      class="expand-icon"
+    >
+      {{ expandedIds.has(sortedConnections[virtualRow.index].id) ? '▼' : '▶' }}
+    </span>
+    <span v-else class="expand-placeholder"></span>
+    {{ sortedConnections[virtualRow.index].id }}
+  </div>
+  <!-- 其他单元格... -->
+  <div class="td">  <!-- 新增操作列 -->
+    <button
+      @click.stop="handleCloseConnection(sortedConnections[virtualRow.index])"
+      class="btn-close-single"
+      title="关闭连接"
+    >×</button>
+  </div>
+</div>
+```
+
+#### 修改位置 4：脚本逻辑（约第 297 行后）
+
+**新增 `handleCloseConnection` 方法**：
+
+```javascript
+// 关闭单个连接
+function handleCloseConnection(conn) {
+  wsStore.closeConnection(conn.id)
+}
+```
+
+#### 修改位置 5：样式（约第 630 行前）
+
+**新增关闭按钮样式**：
+
+```css
+/* 单条关闭按钮 */
+.btn-close-single {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #d9534f;
+  color: #d9534f;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-close-single:hover {
+  background: #d9534f;
+  color: white;
+}
+
+.btn-close-single:active {
+  transform: scale(0.95);
+}
+```
+
+---
+
+## 关键文件
+
+| 文件                        | 修改类型                 |
+| --------------------------- | ------------------------ |
+| `proxysocket/proxy.go`      | 新增 case 分支           |
+| `src/stores/websocket.js`   | 新增方法并导出           |
+| `src/views/Connections.vue` | 新增列、按钮、方法和样式 |
+
+---
+
+## 验证方法
+
+### 测试场景
+
+1. **子连接关闭**：
+   - 产生 HTTPS MITM 连接（`curl -x 127.0.0.1:8080 -k https://baidu.com`）
+   - 展开父隧道，显示子连接
+   - 点击子连接的红叉
+   - **预期**：该子连接消失，父隧道保持活跃
+
+2. **父隧道关闭**：
+   - 产生 HTTPS MITM 连接
+   - 点击父隧道的红叉
+   - **预期**：父隧道及所有子连接立即消失
+
+3. **底层断开验证**：
+   - 关闭一个正在传输的连接（如大文件下载）
+   - **预期**：终端显示连接被终止
+
+4. **UI 即时性验证**：
+   - 点击红叉后
+   - **预期**：条目立即消失，无需等待 2.5 秒
+
+### 后端日志检查
+
+```bash
+# 观察关闭操作是否正确执行
+# 连接应立即从 hub.proxy.Connections 中移除
+```
+
+---
+
+## 与原计划的主要变更
+
+| 方面       | 原计划                                  | 修订计划                                                     |
+| ---------- | --------------------------------------- | ------------------------------------------------------------ |
+| 墓碑处理   | 直接 Delete，不更新状态                 | **即时墓碑**：先更新 `Status` 和 `EndTime`，再 Delete        |
+| 为什么修改 | 原方案简单直接                          | 保留状态标记用于审计，代码逻辑更清晰，且对用户无影响（微秒级差异） |
+| 父隧道判断 | `ParentSess == 0 \|\| ParentSess == id` | `ParentSess == 0`（简化，父隧道的 ParentSess 永远是 0）      |
+| 子连接条件 | `ParentSess == id && Session != id`     | 保持不变                                                     |
+| 前端 CSS   | 不完整                                  | 完整（表头+按钮+样式）                                       |
+| 方法导出   | 缺失                                    | 已补充                                                       |
+
+### 即时墓碑设计说明
+
+```
+用户点击红叉
+    ↓
+后端接收 closeConnection 消息
+    ↓
+调用 OnClose() 断开底层 TCP 连接
+    ↓
+更新 Status = "Closed"      ← 标记状态
+更新 EndTime = time.Now()   ← 记录关闭时间（用于审计）
+    ↓
+立即 Delete() 从 map 删除   ← 连接立即从列表消失
+```
+
+**与系统正常关闭的区别**：
+
+- **系统正常关闭**：标记 Closed → 等待 2.5 秒 → 自动清理
+- **手动关闭**：标记 Closed → 立即清理（不等待）

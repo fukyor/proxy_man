@@ -148,6 +148,10 @@ func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c
 		return proxy.dial(ctx, network, addr)
 	}
 
+	if !proxy.Config.GetConfig().RouteEnable {
+		return proxy.dial(ctx, network, addr)
+	}
+
 	// 完成规则代理完成规则转发
 	if proxy.ConnectWithReqDial != nil {
 		return proxy.ConnectWithReqDial(ctx.Req, network, addr)
@@ -308,6 +312,18 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		Session:        atomic.AddInt64(&proxy.sess, 1),
 	}
 
+	// 创建hijack
+	hijk, ok := w.(http.Hijacker)
+	if !ok {
+		panic("httpsSever not support hijack")
+	}
+
+	connFromClinet, _, err := hijk.Hijack()
+
+	if err != nil {
+		panic("hijack connection fail" + err.Error())
+	}
+
 	// 创建顶层隧道连接记录
 	tunnelSession := topctx.Session
 	proxy.Connections.Store(tunnelSession, &ConnectionInfo{
@@ -322,27 +338,17 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		Status:      "Active",
 		UploadRef:   &topctx.TrafficCounter.req_sum,
 		DownloadRef: &topctx.TrafficCounter.resp_sum,
+		OnClose:     func() { connFromClinet.Close() },
 	})
 
-	// 创建hijack
-	hijk, ok := w.(http.Hijacker)
-	if !ok {
-		panic("httpsSever not support hijack")
-	}
-
-	connFromClinet, _, err := hijk.Hijack()
-
-	if err != nil {
-		panic("hijack connection fail" + err.Error())
-	}
 	topctx.Log_P("处理器数量Have %d CONNECT handlers", len(proxy.httpsHandlers))
 
 	strategy, host := OkConnect, r.URL.Host
 
 	// MITM 开关：根据端口选择默认策略
-	if !proxy.MitmEnabled {
+	if !proxy.Config.GetConfig().MitmEnabled {
 		strategy = OkConnect
-	}else {
+	} else {
 		strategy = MitmConnect
 	}
 
@@ -366,7 +372,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 
 		if err != nil {
 			topctx.WarnP("拨号获取套接字错误Error dialing to %s: %s", host, err.Error())
-			httpError(connRemoteSite, topctx, err) // 如果出错手动关闭连接
+			httpError(connFromClinet, topctx, err) // 如果出错手动关闭客户端连接
 			proxy.MarkConnectionClosed(tunnelSession)
 			return
 		}
@@ -505,7 +511,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		// --- 3. 请求循环（从客户端隧道读取 HTTP/1.1 Keep-Alive 请求流）---
 		// 注：for 循环是读取客户端请求的标准模式
 		// proxy→target 的连接复用由 Transport 连接池自动管理
-		reqReader := http1parser.NewRequestReader(proxy.PreventParseHeader, mitmClientConn)
+		reqReader := http1parser.NewRequestReader(proxy.Config.GetConfig().PreventParseHeader, mitmClientConn)
 
 		for !reqReader.IsEOF() {
 			req, err := reqReader.ReadRequest()
@@ -611,7 +617,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					resp.Header.Set("Transfer-Encoding", "chunked")
 				}
 
-				if !isWebsocket && !proxy.ConnectMaintain {
+				if !isWebsocket && !proxy.Config.GetConfig().ConnectMaintain {
 					resp.Header.Set("Connection", "close")
 				}
 

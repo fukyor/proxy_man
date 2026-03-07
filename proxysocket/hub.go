@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"sort"
 	"time"
+
 	//"log"
-	"github.com/gorilla/websocket"
 	"proxy_man/mproxy"
+
+	"github.com/gorilla/websocket"
 )
 
 // 更新订阅
@@ -120,7 +122,7 @@ func (h *WebSocketHub) StartTrafficPusher() {
 	}()
 }
 
-// 连接推送器（每 500ms 推送一次，Active 优先、Session 倒序，最多 300 条）
+// 连接推送器（每 500ms 推送一次，Active 优先、Session 倒序，最多 350 条）
 func (h *WebSocketHub) StartConnectionPusher() {
 	const tombstoneRetention = 2500 * time.Millisecond
 	const maxConnections = 350
@@ -296,7 +298,7 @@ func (h *WebSocketHub) StartMitmDetailPusher() {
 					return
 				}
 				batch = append(batch, exchange)
-				if len(batch) >= 100 {
+				if len(batch) >= 200 {
 					h.sendMitmBatch(batch)
 					batch = batch[:0]
 				}

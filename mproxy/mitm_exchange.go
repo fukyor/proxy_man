@@ -102,7 +102,7 @@ func (ctx *Pcontext) SetCaptureError(err error) {
 // SendExchange 发送 Exchange 到全局通道，在响应完成后自动调用
 // 这个方法会被 respBodyReader.onClose 触发
 func (ctx *Pcontext) SendExchange() {
-	if !ctx.core_proxy.MitmEnabled {
+	if !ctx.core_proxy.Config.GetConfig().MitmEnabled {
 		return // MitmEnabled 为总开关，关闭时不发送任何 Exchange
 	}
 	cap := ctx.exchangeCapture
