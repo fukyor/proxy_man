@@ -62,7 +62,9 @@ func main() {
 		Addr:   ":8000",
 		Secret: "123",
 	}
-	if !ws.StartControlServer(cm, router) {
+	if ws.StartControlServer(cm, router) {
+		log.Println("websocket server 已启动: 127.0.0.1:8000")
+	}else {
 		log.Fatal("websocket server启动失败")
 	}
 
@@ -72,6 +74,8 @@ func main() {
 	}
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal("服务器错误", err)
+	}else {
+		log.Println("proxy_man server 已启动: 127.0.0.1:8000")
 	}
 
 }

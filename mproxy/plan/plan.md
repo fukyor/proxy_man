@@ -1,316 +1,246 @@
-# 添加详细连接页面单条连接关闭功能 - 修订计划
+# 单文件可执行程序部署方案 - 审查后修订计划
 
-## 上下文
+## 审查结果
 
-用户需求：在前端"详细连接"页面每个连接条目末尾添加"小红叉"按钮，点击后关闭指定连接。
+### 发现的问题
 
-**关键要求**：
+#### 问题 1：embed 指令路径不匹配（严重程度：高）
 
-1. 关闭父隧道时，同时关闭其所有子连接
-2. 关闭子连接时，不影响父隧道
-3. 关闭包括：断开底层连接（`OnClose()`）和清除连接记录
+- **问题描述**：计划中建议 `//go:embed public/dist/*`，但这个路径是相对于 `proxysocket` 包的，而不是项目根目录
+- **影响**：如果 `public/dist/` 放在 `proxy_man` 根目录下，embed 指令将无法找到文件
+- **解决方案**：将 `dist` 文件夹直接放在 `proxysocket` 包内（`proxysocket/dist/`），并使用 `//go:embed dist/*`
 
-4. **墓碑机制保留**：系统正常关闭仍使用 2.5 秒墓碑期，但手动关闭时需立竿见影
+#### 问题 2：计划代码存在占位符（严重程度：中）
 
-**设计决策**：采用"即时墓碑"方案——在删除前先更新 `Status = "Closed"` 和 `EndTime`，然后立即 `Delete()`。这样既满足用户期望（连接立即消失），又保留了完整的状态标记用于审计和调试。
+- **问题描述**：计划第 84 行存在 `[拦截回退逻辑代码...]` 占位符，缺少完整的 Vue Router History 模式支持实现
+- **影响**：无法直接按计划实施，需要补充完整的 SPA fallback 逻辑
+- **解决方案**：提供完整的静态文件服务实现代码
+
+#### 问题 3：路由优先级说明不完整（严重程度：低）
+
+- **问题描述**：计划提到了"最长前缀匹配优先"，但未明确说明 Go < 1.21 版本的行为差异
+- **影响**：在旧版本 Go 中，`/` 路径可能不会匹配所有路径
+- **解决方案**：确保项目使用 Go 1.21+，或使用兼容的处理方式
+
+### 优化建议
+
+1. **自动化脚本建议**：使用 PowerShell 脚本而非批处理，提供更好的跨平台支持
+2. **开发模式优化**：添加环境变量控制，在开发模式下跳过 embed 文件服务
+3. **错误处理增强**：添加 embed 文件加载失败的降级处理
 
 ---
 
-## 后端修改 (Go)
+## 修订后的实施计划
 
-### 文件：`proxysocket/proxy.go`
+### 第一步：修改 `proxysocket/proxy.go`
 
-#### 修改位置：`handleWebSocket` 函数的 switch 语句（约第 128-139 行）
-
-**新增 `case "closeConnection"` 分支**：
+在 `proxysocket` 包内添加 `embed` 支持，并重写 `StartControlServer` 函数：
 
 ```go
-case "closeConnection":
-    // 解析连接 ID
-    idFloat, ok := msg["id"].(float64)
-    if !ok {
-        break
-    }
-    id := int64(idFloat)
+package proxysocket
 
-    // 查找目标连接
-    value, ok := hub.proxy.Connections.Load(id)
-    if !ok {
-        break
-    }
-    targetInfo := value.(*mproxy.ConnectionInfo)
+import (
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"net/http"
+	"proxy_man/mproxy"
+	"proxy_man/myminio"
+	"strings"
+	"sync"
 
-    // 判断是否为父隧道（ParentSess == 0 表示父隧道）
-    isParent := targetInfo.ParentSess == 0
+	"github.com/gorilla/websocket"
+	"github.com/rs/cors"
+)
 
-    // 收集需要关闭的 ID 列表
-    toClose := []int64{id}
-
-    if isParent {
-        // 父隧道：找出所有子连接
-        hub.proxy.Connections.Range(func(key, value any) bool {
-            info := value.(*mproxy.ConnectionInfo)
-            if info.ParentSess == id && info.Session != id {
-                toClose = append(toClose, info.Session)
-            }
-            return true
-        })
-    }
-
-    // 关闭所有收集的连接
-    for _, closeId := range toClose {
-        if val, ok := hub.proxy.Connections.Load(closeId); ok {
-            info := val.(*mproxy.ConnectionInfo)
-            // 1. 调用 OnClose() 断开底层连接
-            if info.OnClose != nil {
-                info.OnClose()
-            }
-            // 2. 即时墓碑：更新状态和时间（用于日志/审计）
-            info.Status = "Closed"
-            info.EndTime = time.Now()
-            // 3. 立即物理删除（用户主动关闭，无需等待墓碑期）
-            hub.proxy.Connections.Delete(closeId)
-        }
-    }
+//go:embed dist
+var embeddedFS embed.FS
 ```
 
-**注意事项**：
+**关键修改点**：
 
-- 需要在文件开头导入 `"time"` 包（如果没有）
-- 父隧道判断：`ParentSess == 0`（而非计划中的 `ParentSess == id`）
-- 子连接查找条件：`info.ParentSess == id && info.Session != id`
+- 将 `dist` 文件夹放在 `proxysocket/` 目录下（与 `proxy.go` 同级）
+- `//go:embed dist` 指令会嵌入整个 dist 目录
 
----
+### 第二步：重写 `StartControlServer` 函数
 
-## 前端修改 (Vue)
+完整实现静态文件服务和 Vue Router History 模式支持：
 
-### 文件：`src/stores/websocket.js`
+```go
+func (ws *WebsocketServer) StartControlServer(cm *mproxy.ConfigManager, router *mproxy.Router) bool {
+	hub = &WebSocketHub{proxy: ws.Proxy}
+	mux := http.NewServeMux()
 
-#### 修改位置：return 语句（约第 316-335 行）
+	// 1. 高优先级路由：API 和 WebSocket
+	mux.HandleFunc("/start", ws.loginHandler(ws.handleWebSocket))
+	mux.HandleFunc("/api/storage/download", myminio.HandleDownload)
+	mux.HandleFunc("/api/config", ws.handleConfig(cm, router))
 
-**1. 新增 `closeConnection` 方法**（在 `closeAllConnections` 函数后添加）：
+	// 2. 静态文件服务（兜底处理所有其他请求）
+	mux.HandleFunc("/", ws.handleStaticFiles)
 
-```javascript
-/**
- * 关闭指定连接
- * @param {number} id - 连接 ID
- */
-function closeConnection(id) {
-  if (socket.value?.readyState === WebSocket.OPEN) {
-    socket.value.send(JSON.stringify({ action: 'closeConnection', id }))
-  }
+	corsMiddleware := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: true,
+	})
+
+	// 启动推送服务
+	hub.StartTrafficPusher()
+	hub.StartConnectionPusher()
+	hub.StartLogPusher()
+	hub.StartMitmDetailPusher()
+
+	go func() {
+		if err := http.ListenAndServe(ws.Addr, corsMiddleware.Handler(mux)); err != nil {
+			log.Printf("Socket Server failed to start: %v", err)
+		}
+	}()
+
+	return true
+}
+
+// handleStaticFiles 处理静态文件请求，支持 Vue Router History 模式
+func (ws *WebsocketServer) handleStaticFiles(w http.ResponseWriter, r *http.Request) {
+	// 提取嵌入的 dist 子目录
+	distFS, err := fs.Sub(embeddedFS, "dist")
+	if err != nil {
+		http.Error(w, "Frontend assets not available", http.StatusInternalServerError)
+		log.Printf("Failed to access embedded FS: %v", err)
+		return
+	}
+
+	// 尝试直接请求文件
+	filePath := strings.TrimPrefix(r.URL.Path, "/")
+	if filePath == "" {
+		filePath = "index.html"
+	}
+
+	// 检查文件是否存在
+	if _, err := distFS.Open(filePath); err == nil {
+		// 文件存在，直接提供
+		http.FileServer(http.FS(distFS)).ServeHTTP(w, r)
+		return
+	}
+
+	// 文件不存在，返回 index.html（Vue Router History 模式）
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	indexContent, err := distFS.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, "index.html not found", http.StatusNotFound)
+		return
+	}
+	w.Write(indexContent)
 }
 ```
 
-**2. 在 return 语句中导出**：
+### 第三步：简化版自动化打包流程
 
-```javascript
-return {
-  socket,
-  isConnected,
-  subscriptions,
-  trafficHistory,
-  connections,
-  logs,
-  mitmExchanges,
-  apiUrl,
-  connect,
-  disconnect,
-  updateSubscriptions,
-  closeAllConnections,
-  closeConnection,        // 新增
-  subscribeTraffic,
-  subscribeConnections,
-  subscribeLogs,
-  clearLogs,
-  subscribeMITM,
-  clearMitmExchanges
-}
+考虑到不需要使用复杂的 PowerShell 或 Shell 脚本，因为前端的构建和后端的编译本身就是非常确定的单行命令。我们只需要在 `proxy_man` 根目录下，创建一个最基础的 `build.cmd`（Windows 批处理文件）即可：
+
+**`build.cmd`**:
+```cmd
+@echo off
+echo [1/3] 正在构建 Vue 前端...
+cd ..\proxyui
+call npm run build
+
+echo [2/3] 正在复制前端产物至 Go 目录...
+cd ..\proxy_man
+rmdir /s /q proxysocket\dist 2>nul
+xcopy /e /i /y ..\proxyui\dist proxysocket\dist
+
+echo [3/3] 开始跨平台静态编译...
+set CGO_ENABLED=0
+
+echo. & echo 正在编译 Windows 版本: proxy_man_win.exe ...
+set GOOS=windows
+set GOARCH=amd64
+go build -ldflags="-w -s" -o proxy_man_win.exe main.go
+
+echo. & echo 正在编译 Linux 版本: proxy_man_linux ...
+set GOOS=linux
+set GOARCH=amd64
+go build -ldflags="-w -s -extldflags '-static'" -o proxy_man_linux main.go
+
+echo. & echo 编译完成！可执行文件已生成在当前目录下。
+pause
 ```
 
----
+这个不到 20 行的批处理脚本使用了最基础的 CMD 命令，没有任何复杂的逻辑判断。双击运行它，它就会自动按照顺序帮你完成前端的生产构建，并将结果嵌入到两个独立的无依赖单文件可执行程序中。
 
-### 文件：`src/views/Connections.vue`
+### 第四步：更新 .gitignore
 
-#### 修改位置 1：CSS Grid 布局（约第 463 行）
+在 `.gitignore` 中添加：
 
-**修改 `.conn-grid-row` 的 `grid-template-columns`**：
-
-```css
-.conn-grid-row {
-  display: grid;
-  /* 末尾新增 50px 操作列 */
-  grid-template-columns: 100px 80px 200px 1fr 120px 80px 80px 50px;
-  align-items: center;
-  color: #cba376;
-}
 ```
-
-#### 修改位置 2：表头（约第 40-70 行）
-
-**在 `.thead-row` 末尾新增表头格子**：
-
-```html
-<div class="conn-grid-row thead-row">
-  <div @click="handleSort('id')" class="th sortable">
-    <span class="expand-header-placeholder"></span>
-    ID
-    <span class="sort-icon" v-if="sortBy === 'id'">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
-  </div>
-  <!-- 其他表头... -->
-  <div class="th">操作</div>  <!-- 新增 -->
-</div>
-```
-
-#### 修改位置 3：数据行（约第 92-126 行）
-
-**在 `.data-row` 末尾新增关闭按钮**：
-
-```html
-<div
-  class="conn-grid-row data-row"
-  :class="{
-    'parent-row': sortedConnections[virtualRow.index].isParent,
-    'child-row': !sortedConnections[virtualRow.index].isParent
-  }"
->
-  <div class="td">
-    <span
-      v-if="sortedConnections[virtualRow.index].isParent && hasChildren(sortedConnections[virtualRow.index].id)"
-      @click.stop="toggleExpand(sortedConnections[virtualRow.index].id)"
-      class="expand-icon"
-    >
-      {{ expandedIds.has(sortedConnections[virtualRow.index].id) ? '▼' : '▶' }}
-    </span>
-    <span v-else class="expand-placeholder"></span>
-    {{ sortedConnections[virtualRow.index].id }}
-  </div>
-  <!-- 其他单元格... -->
-  <div class="td">  <!-- 新增操作列 -->
-    <button
-      @click.stop="handleCloseConnection(sortedConnections[virtualRow.index])"
-      class="btn-close-single"
-      title="关闭连接"
-    >×</button>
-  </div>
-</div>
-```
-
-#### 修改位置 4：脚本逻辑（约第 297 行后）
-
-**新增 `handleCloseConnection` 方法**：
-
-```javascript
-// 关闭单个连接
-function handleCloseConnection(conn) {
-  wsStore.closeConnection(conn.id)
-}
-```
-
-#### 修改位置 5：样式（约第 630 行前）
-
-**新增关闭按钮样式**：
-
-```css
-/* 单条关闭按钮 */
-.btn-close-single {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid #d9534f;
-  color: #d9534f;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  transition: all 0.2s;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.btn-close-single:hover {
-  background: #d9534f;
-  color: white;
-}
-
-.btn-close-single:active {
-  transform: scale(0.95);
-}
+# 嵌入的前端构建产物
+proxysocket/dist/
 ```
 
 ---
 
 ## 关键文件
 
-| 文件                        | 修改类型                 |
-| --------------------------- | ------------------------ |
-| `proxysocket/proxy.go`      | 新增 case 分支           |
-| `src/stores/websocket.js`   | 新增方法并导出           |
-| `src/views/Connections.vue` | 新增列、按钮、方法和样式 |
+| 文件路径               | 修改类型 | 说明                                                         |
+| ---------------------- | -------- | ------------------------------------------------------------ |
+| `proxysocket/proxy.go` | 修改     | 添加 embed 支持，重写 StartControlServer，新增 handleStaticFiles |
+| `build.ps1`            | 新建     | Windows 构建脚本                                             |
+| `build.sh`             | 新建     | Linux/macOS 构建脚本                                         |
+| `.gitignore`           | 修改     | 添加 proxysocket/dist/ 忽略规则                              |
 
 ---
 
 ## 验证方法
 
-### 测试场景
+### 开发模式验证（前后端分离）
 
-1. **子连接关闭**：
-   - 产生 HTTPS MITM 连接（`curl -x 127.0.0.1:8080 -k https://baidu.com`）
-   - 展开父隧道，显示子连接
-   - 点击子连接的红叉
-   - **预期**：该子连接消失，父隧道保持活跃
+1. 启动后端：`go run main.go`
+2. 启动前端：在 `proxyui` 目录执行 `npm run dev`
+3. 访问 `http://localhost:5173` 验证功能
 
-2. **父隧道关闭**：
-   - 产生 HTTPS MITM 连接
-   - 点击父隧道的红叉
-   - **预期**：父隧道及所有子连接立即消失
+### 生产模式验证（单文件部署）
 
-3. **底层断开验证**：
-   - 关闭一个正在传输的连接（如大文件下载）
-   - **预期**：终端显示连接被终止
+1. 执行 `./build.ps1` 或 `./build.sh`
+2. 运行生成的可执行文件：
+   - Windows: `.\proxy_man_win.exe`
+   - Linux: `./proxy_man_linux`
+3. 访问 `http://localhost:8000` 验证：
+   - 首页正常加载
+   - 直接访问 `/dashboard/connections` 等 Vue Router 路由正常工作
+   - 刷新页面不会 404
+   - WebSocket 连接正常
+   - API 请求正常
 
-4. **UI 即时性验证**：
-   - 点击红叉后
-   - **预期**：条目立即消失，无需等待 2.5 秒
+### 跨平台验证
 
-### 后端日志检查
-
-```bash
-# 观察关闭操作是否正确执行
-# 连接应立即从 hub.proxy.Connections 中移除
-```
+1. 在 Windows 上运行 Linux 构建的文件（通过 WSL）
+2. 在 Linux 上运行 Windows 构建的文件（通过 Wine）
+3. 确认静态链接成功（无外部 libc 依赖）
 
 ---
 
-## 与原计划的主要变更
+## 影响范围分析
 
-| 方面       | 原计划                                  | 修订计划                                                     |
-| ---------- | --------------------------------------- | ------------------------------------------------------------ |
-| 墓碑处理   | 直接 Delete，不更新状态                 | **即时墓碑**：先更新 `Status` 和 `EndTime`，再 Delete        |
-| 为什么修改 | 原方案简单直接                          | 保留状态标记用于审计，代码逻辑更清晰，且对用户无影响（微秒级差异） |
-| 父隧道判断 | `ParentSess == 0 \|\| ParentSess == id` | `ParentSess == 0`（简化，父隧道的 ParentSess 永远是 0）      |
-| 子连接条件 | `ParentSess == id && Session != id`     | 保持不变                                                     |
-| 前端 CSS   | 不完整                                  | 完整（表头+按钮+样式）                                       |
-| 方法导出   | 缺失                                    | 已补充                                                       |
+**修改爆炸半径**：
 
-### 即时墓碑设计说明
+- d=1（直接受影响）：`main.go:main()` 函数调用 `StartControlServer`
+- d=2（间接受影响）：无
+- 风险等级：**低**（仅修改控制服务器的路由处理，不影响代理核心功能）
 
-```
-用户点击红叉
-    ↓
-后端接收 closeConnection 消息
-    ↓
-调用 OnClose() 断开底层 TCP 连接
-    ↓
-更新 Status = "Closed"      ← 标记状态
-更新 EndTime = time.Now()   ← 记录关闭时间（用于审计）
-    ↓
-立即 Delete() 从 map 删除   ← 连接立即从列表消失
-```
+**受影响的执行流程**：
 
-**与系统正常关闭的区别**：
+1. `Main → SaveLocked`（启动流程）
+2. `Main → DefaultConfig`（配置加载）
 
-- **系统正常关闭**：标记 Closed → 等待 2.5 秒 → 自动清理
-- **手动关闭**：标记 Closed → 立即清理（不等待）
+**不受影响的功能**：
+
+- 代理服务器（8080 端口）
+- MITM 功能
+- 路由功能
+- MinIO 存储
+- WebSocket 推送逻辑

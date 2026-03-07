@@ -2,3 +2,7 @@ docs/**
 **/**.exe
 test/data/**
 .gitnexus
+# 嵌入的前端构建产物
+proxysocket/dist/
+# Linux 构建产物
+proxy_man_linux

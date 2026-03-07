@@ -1,18 +1,41 @@
 package proxysocket
 
 import (
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"proxy_man/mproxy"
 	"proxy_man/myminio"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/cors"
 )
+
+//go:embed dist
+var embeddedFS embed.FS
+
+var distFS fs.FS
+var staticFileServer http.Handler
+var indexHTML []byte
+
+func init() {
+	var err error
+	distFS, err = fs.Sub(embeddedFS, "dist")
+	if err != nil {
+		log.Fatalf("无法加载嵌入的前端资源: %v", err)
+	}
+	staticFileServer = http.FileServer(http.FS(distFS))
+	indexHTML, err = fs.ReadFile(distFS, "index.html")
+	if err != nil {
+		log.Fatalf("无法读取嵌入的 index.html: %v", err)
+	}
+}
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
@@ -57,6 +80,7 @@ func (ws *WebsocketServer) StartControlServer(cm *mproxy.ConfigManager, router *
 	mux.HandleFunc("/start", ws.loginHandler(ws.handleWebSocket))
 	mux.HandleFunc("/api/storage/download", myminio.HandleDownload) // MinIO 下载 API
 	mux.HandleFunc("/api/config", ws.handleConfig(cm, router))      // 配置管理 API
+	mux.HandleFunc("/", handleStaticFiles)                          // 静态文件服务 + SPA fallback
 
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -185,4 +209,24 @@ func (ws *WebsocketServer) handleConfig(cm *mproxy.ConfigManager, router *mproxy
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// handleStaticFiles 提供嵌入的前端静态文件，支持 Vue Router History 模式
+func handleStaticFiles(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" {
+		path = "index.html"
+	}
+
+	// 尝试打开静态文件
+	f, err := distFS.Open(path)
+	if err == nil {
+		f.Close()
+		staticFileServer.ServeHTTP(w, r)
+		return
+	}
+
+	// 文件不存在 → 返回 index.html，由 Vue Router 接管
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexHTML)
 }
