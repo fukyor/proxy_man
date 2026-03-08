@@ -43,7 +43,12 @@ func (c *Client) GetPresignedURL(key string, expiry time.Duration, filename stri
 	reqParams := make(url.Values)
 	reqParams.Set("response-content-disposition", "attachment; filename=\""+filename+"\"")
 
-	presignedURL, err := c.Client.PresignedGetObject(ctx, c.Config.Bucket, key, expiry, reqParams)
+	// 优先使用公网客户端生成预签名 URL
+	signClient := c.Client
+	if c.PublicClient != nil {
+		signClient = c.PublicClient
+	}
+	presignedURL, err := signClient.PresignedGetObject(ctx, c.Config.Bucket, key, expiry, reqParams)
 	if err != nil {
 		return "", err
 	}

@@ -2,7 +2,10 @@ package mproxy
 
 import (
 	"encoding/json"
+	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -33,6 +36,9 @@ type ServerConfig struct {
 	MitmEnabled        bool `json:"MitmEnabled"`
 	HttpMitmNoTunnel   bool `json:"HttpMitmNoTunnel"`
 
+	// 新增字段：公网/外网 IP 列表（用于防止代理循环）
+	PublicIPs []string `json:"PublicIPs"`
+
 	// 路由相关配置
 	RouteEnable bool        `json:"RouteEnable"`
 	ProxyNodes  []ProxyNode `json:"ProxyNodes"` // 代理节点列表
@@ -48,6 +54,11 @@ type ConfigManager struct {
 
 // NewConfigManager 初始化配置管理器。如果配置文件不存在，则创建默认配置并写入
 func NewConfigManager(filePath string) *ConfigManager {
+	// 相对路径自动转换为可执行文件目录下的绝对路径
+
+	if !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(getExecutableDir(), filePath)
+	}
 	cm := &ConfigManager{
 		FilePath: filePath,
 		Current:  DefaultConfig(),
@@ -73,6 +84,38 @@ func DefaultConfig() *ServerConfig {
 	}
 }
 
+// getExecutableDir 获取可执行文件所在目录
+// go run 产生的临时二进制路径包含 "go-build"，此时回退到工作目录
+func getExecutableDir() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "." // 最后的回退方案
+		}
+		return wd
+	}
+
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		realPath = exePath
+	}
+
+	dir := filepath.Dir(realPath)
+
+	// go run 编译的临时二进制位于含 "go-build" 的临时目录
+	// 或者路径在系统临时目录下，都回退到工作目录
+	if strings.Contains(dir, "go-build") || strings.Contains(dir, os.TempDir()) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "."
+		}
+		return wd
+	}
+
+	return dir
+}
+
 // Load 从本地磁盘读取 JSON 配置文件，反序列化合并到内存
 func (cm *ConfigManager) Load() error {
 	cm.mu.Lock()
@@ -80,6 +123,7 @@ func (cm *ConfigManager) Load() error {
 
 	data, err := os.ReadFile(cm.FilePath)
 	if err != nil {
+		log.Printf("读取配置文件失败: %v", err)
 		if os.IsNotExist(err) {
 			// 文件不存在时，使用当前默认配置立即新建并写入一份
 			return cm.saveLocked()
@@ -89,8 +133,10 @@ func (cm *ConfigManager) Load() error {
 
 	// 将文件内容覆盖到当前配置
 	if err := json.Unmarshal(data, cm.Current); err != nil {
+		log.Printf("解析配置文件失败: %v", err)
 		return err
 	}
+
 	return nil
 }
 

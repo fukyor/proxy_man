@@ -130,13 +130,21 @@ func TLSConfigFromCA(ca *tls.Certificate) func(host string, ctx *Pcontext) (*tls
 }
 
 func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Conn, err error) {
+	// 自环检测
+	if proxy.Config != nil {
+		cfg := proxy.Config.GetConfig()
+		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		}
+	}
+
 	// 用户自定义二级代理，用于扩展规则代理
 	if ctx.Dialer != nil {
 		return ctx.Dialer(ctx.Req.Context(), network, addr)
 	}
 	// 作为最底层的 TCP 拨号，无需再重复打印复杂的路由逻辑
 	// 避免与上层 Router 的日志混淆
-	return net.Dial(network, addr)
+	return net.DialTimeout(network, addr, 6*time.Second)
 }
 
 func (proxy *CoreHttpServer) connectDial(ctx *Pcontext, network, addr string) (c net.Conn, err error) {

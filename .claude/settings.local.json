@@ -36,12 +36,17 @@
       "mcp__gitnexus__list_repos",
       "Read(//e/D/zuoyewenjian/MyProject/proxy_man_ui/proxyui/src/stores/**)",
       "Read(//e/D/zuoyewenjian/MyProject/proxy_man_ui/proxyui/src/views/**)",
-      "Read(//e/e/D/zuoyewenjian/MyProject/**)"
+      "Read(//e/e/D/zuoyewenjian/MyProject/**)",
+      "Bash(./proxy_man_win.exe:*)",
+      "Bash(npx gitnexus:*)",
+      "WebSearch",
+      "Bash(go doc:*)",
+      "mcp__gitnexus__cypher"
     ],
     "deny": [],
     "ask": [],
     "additionalDirectories": [
-      "E:\\D\\zuoyewenjian\\MyProject\\proxy_man_ui\\proxyui"
+      "E:\\D\\zuoyewenjian\\MyProject\\proxyui"
     ]
   },
   "alwaysThinkingEnabled": true

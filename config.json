@@ -1,13 +1,14 @@
 {
   "Port": 8080,
+  "PublicIPs": [],
   "Verbose": true,
   "KeepAcceptEncoding": false,
   "PreventParseHeader": false,
   "KeepDestHeaders": true,
-  "ConnectMaintain": true,
-  "MitmEnabled": true,
-  "HttpMitmNoTunnel": true,
-  "RouteEnable": false,
+  "ConnectMaintain": false,
+  "MitmEnabled": false,
+  "HttpMitmNoTunnel": false,
+  "RouteEnable": true,
   "ProxyNodes": [
     {
       "Name": "clash",
@@ -16,25 +17,9 @@
   ],
   "Routes": [
     {
-      "Id": 3,
-      "Type": "IP",
-      "Value": "127.0.0.1",
-      "Action": "Direct",
-      "Enable": true,
-      "Remarks": "3123123"
-    },
-    {
-      "Id": 4,
-      "Type": "DomainSuffix",
-      "Value": "x.com",
-      "Action": "clash",
-      "Enable": true,
-      "Remarks": "dwadawd"
-    },
-    {
-      "Id": 5,
+      "Id": 2,
       "Type": "DomainKeyword",
-      "Value": "^google\\.*,bai.*\\.com$",
+      "Value": "(.*|^)google\\.com$",
       "Action": "clash",
       "Enable": true,
       "Remarks": ""

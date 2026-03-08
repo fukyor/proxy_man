@@ -47,17 +47,40 @@ type OutboundDialer interface {
 
 // DirectDialer 直连拨号器
 type DirectDialer struct {
+	proxy     *CoreHttpServer // 持有代理实例引用
 	transport *http.Transport
 }
 
-func NewDirectDialer() *DirectDialer {
+func NewDirectDialer(proxy *CoreHttpServer) *DirectDialer {
+	tr := createBaseTransport()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// 自环检测
+		if proxy.Config != nil {
+			cfg := proxy.Config.GetConfig()
+			if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
+				return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+			}
+		}
+		return (&net.Dialer{
+			Timeout:   6 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext(ctx, network, addr)
+	}
 	return &DirectDialer{
-		transport: createBaseTransport(),
+		proxy:     proxy,
+		transport: tr,
 	}
 }
 
 func (d *DirectDialer) Dial(network, addr string) (net.Conn, error) {
-	return net.Dial(network, addr)
+	// 自环检测
+	if d.proxy.Config != nil {
+		cfg := d.proxy.Config.GetConfig()
+		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		}
+	}
+	return net.DialTimeout(network, addr, 6*time.Second)
 }
 
 func (d *DirectDialer) Name() string { return "Direct" }
@@ -68,6 +91,7 @@ func (d *DirectDialer) GetTransport() *http.Transport {
 
 // HttpProxyDialer HTTP 二级代理拨号器
 type HttpProxyDialer struct {
+	proxy     *CoreHttpServer // 持有代理实例引用
 	name      string
 	proxyURL  string
 	dialer    func(network, addr string) (net.Conn, error)
@@ -84,10 +108,23 @@ func NewHttpProxyDialer(proxy *CoreHttpServer, name, proxyURL string) (*HttpProx
 	tr.DialContext = func(c context.Context, network, addr string) (net.Conn, error) {
 		return dialer(network, addr)
 	}
-	return &HttpProxyDialer{name: name, proxyURL: proxyURL, dialer: dialer, transport: tr}, nil
+	return &HttpProxyDialer{
+		proxy:     proxy,
+		name:      name,
+		proxyURL:  proxyURL,
+		dialer:    dialer,
+		transport: tr,
+	}, nil
 }
 
 func (d *HttpProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	// 检查目标地址是否是自环（防止配置错误）
+	if d.proxy.Config != nil {
+		cfg := d.proxy.Config.GetConfig()
+		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		}
+	}
 	return d.dialer(network, addr)
 }
 
@@ -119,7 +156,7 @@ func NewRouter(proxy *CoreHttpServer) *Router {
 	return &Router{
 		proxy:   proxy,
 		Dialers: make(map[string]OutboundDialer),
-		Default: NewDirectDialer(),
+		Default: NewDirectDialer(proxy),
 	}
 }
 
@@ -174,7 +211,7 @@ func (r *Router) ReloadFromConfig(cfg *ServerConfig) error {
 	// === 锁外构建（耗时操作不持锁）===
 
 	// 1. 构建拨号器
-	directDialer := NewDirectDialer()
+	directDialer := NewDirectDialer(r.proxy)
 	newDialers := map[string]OutboundDialer{"Direct": directDialer}
 	for _, node := range cfg.ProxyNodes {
 		dialer, err := NewHttpProxyDialer(r.proxy, node.Name, node.URL)

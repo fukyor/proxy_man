@@ -17,6 +17,22 @@ func main() {
 	// 初始化配置管理器
 	cm := mproxy.NewConfigManager("config.json")
 	cfg := cm.GetConfig()
+
+	// ===== 新增：public_ips 醒目警告 =====
+	if len(cfg.PublicIPs) == 0 {
+		log.Println("")
+		log.Println("========================================================")
+		log.Println("⚠️  警告：未配置 PublicIPs (公网/外网 IP)")
+		log.Println("========================================================")
+		log.Println("在云服务器上部署时，强烈建议配置公网 IP 以防止代理循环")
+		log.Println("您可以通过 Web UI 控制面板进行配置")
+		log.Println("========================================================")
+		log.Println("")
+	} else {
+		log.Printf("✓ 已配置公网 IP 防环: %v", cfg.PublicIPs)
+	}
+	// ===== 新增结束 =====
+
 	proxy.Config = cm
 
 	// 使用 LogCollector 包装原有 Logger
@@ -25,6 +41,7 @@ func main() {
 	// 初始化 MinIO
 	minioConfig := myminio.Config{
 		Endpoint:        "127.0.0.1:9000",
+		PublicEndpoint:  "117.72.191.85:9000", // 云服务器部署时改为 "公网IP:9000" 或 "域名:9000"
 		AccessKeyID:     "root",
 		SecretAccessKey: "12345678",
 		UseSSL:          false,

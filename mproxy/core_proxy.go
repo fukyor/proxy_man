@@ -2,6 +2,8 @@ package mproxy
 
 import (
 	//"net"
+	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"time"
 )
 
 /*
@@ -119,10 +122,29 @@ func NewCoreHttpSever() *CoreHttpServer {
 		DirectHandler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "非代理请求This is a proxy server. Does not respond to non-proxy requests.", http.StatusInternalServerError)
 		}),
-		// 默认tr用于代理发送请求
-		Transport: &http.Transport{
-			TLSClientConfig: tlsClientSkipVerify,
-		},
 	}
+
+	// 设置 Transport（闭包捕获 core_proxy 变量）
+	core_proxy.Transport = &http.Transport{
+		TLSClientConfig: tlsClientSkipVerify,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// 运行时检查配置（此时 core_proxy.Config 已在 main.go 中初始化）
+			if core_proxy.Config != nil {
+				cfg := core_proxy.Config.GetConfig()
+				if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
+					return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+				}
+			}
+			return (&net.Dialer{
+				Timeout:   6 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext(ctx, network, addr)
+		},
+		TLSHandshakeTimeout: 6 * time.Second,
+		MaxIdleConns:        300,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
 	return core_proxy
 }
