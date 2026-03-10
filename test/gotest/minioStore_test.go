@@ -53,26 +53,26 @@ func (m *MockMinioTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}, nil
 }
 
-// setupMinioClient 初始化 Mock MinIO 客户端
-func setupMinioClient() {
+// setupMinioClient 初始化 Mock MinIO 客户端，返回 *Client 实例
+func setupMinioClient() *myminio.Client {
 	client, _ := minio.New("mock.local:9000", &minio.Options{
 		Creds:     credentials.NewStaticV4("mock-key", "mock-secret", ""),
 		Secure:    false,
 		Transport: &MockMinioTransport{},
 	})
 
-	// 【致命问题修复】必须设置 Enabled: true，否则 BuildBodyReader 走短路分支
-	myminio.GlobalClient = &myminio.Client{
+	mc := &myminio.Client{
 		Client: client,
 		Config: myminio.Config{
 			Endpoint: "mock.local:9000",
 			Bucket:   "test-bucket",
-			Enabled:  true, // 关键修复：启用 MinIO 功能
+			Enabled:  true,
 		},
 	}
 
 	// 确保临时目录存在（Chunked 路径需要）
 	os.MkdirAll("myminio/tmp", 0755)
+	return mc
 }
 
 // ========== 基准测试 ==========
@@ -81,14 +81,14 @@ func setupMinioClient() {
 // go test -bench=BenchmarkUpload_RoutineSafety -run=^$ -benchmem -cpu=2,6,12
 // 因为默认先运行单元测试，但我们只想运行基准测试，-run指定运行的单元测试 -run=^$指定不存在的单元测试
 func BenchmarkUpload_RoutineSafety(b *testing.B) {
-	setupMinioClient()
+	mc := setupMinioClient()
 	data := []byte(strings.Repeat("A", 1024)) // 1KB 数据
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			fakeBody := io.NopCloser(bytes.NewReader(data))
-			reader := myminio.BuildBodyReader(fakeBody, 10086, "req", "application/octet-stream", int64(len(data)))
+			reader := mc.BuildBodyReader(fakeBody, 10086, "req", "application/octet-stream", int64(len(data)))
 
 			// 模拟消费数据
 			io.Copy(io.Discard, reader)
@@ -100,7 +100,7 @@ func BenchmarkUpload_RoutineSafety(b *testing.B) {
 // BenchmarkUpload_Chunked 未知长度上传（走临时文件路径）
 // go test -bench=BenchmarkUpload_Chunked -run=^$ -benchmem -cpu=2,6,12
 func BenchmarkUpload_Chunked(b *testing.B) {
-	setupMinioClient()
+	mc := setupMinioClient()
 	data := []byte(strings.Repeat("B", 2048)) // 2KB 数据
 
 	b.ResetTimer()
@@ -108,7 +108,7 @@ func BenchmarkUpload_Chunked(b *testing.B) {
 		for pb.Next() {
 			fakeBody := io.NopCloser(bytes.NewReader(data))
 			// contentLength = -1，强制走临时文件路径
-			reader := myminio.BuildBodyReader(fakeBody, 10087, "resp", "application/json", -1)
+			reader := mc.BuildBodyReader(fakeBody, 10087, "resp", "application/json", -1)
 
 			io.Copy(io.Discard, reader)
 			reader.Close()
@@ -119,13 +119,13 @@ func BenchmarkUpload_Chunked(b *testing.B) {
 // BenchmarkUpload_EmptyBody 空 body 边界条件测试
 // go test -bench=BenchmarkUpload_EmptyBody -run=^$ -benchmem -cpu=2,6,12
 func BenchmarkUpload_EmptyBody(b *testing.B) {
-	setupMinioClient()
+	mc := setupMinioClient()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			fakeBody := io.NopCloser(bytes.NewReader(nil)) // 空 body
-			reader := myminio.BuildBodyReader(fakeBody, 10088, "req", "application/octet-stream", 0)
+			reader := mc.BuildBodyReader(fakeBody, 10088, "req", "application/octet-stream", 0)
 
 			io.Copy(io.Discard, reader)
 			reader.Close()
@@ -136,7 +136,7 @@ func BenchmarkUpload_EmptyBody(b *testing.B) {
 // BenchmarkUpload_SkipUpload 跳过捕获路径（对照组）
 // go test -bench=BenchmarkUpload_SkipUpload -run=^$ -benchmem -cpu=2,6,12
 func BenchmarkUpload_SkipUpload(b *testing.B) {
-	setupMinioClient()
+	mc := setupMinioClient()
 	data := []byte(strings.Repeat("C", 1024))
 
 	b.ResetTimer()
@@ -144,7 +144,7 @@ func BenchmarkUpload_SkipUpload(b *testing.B) {
 		for pb.Next() {
 			fakeBody := io.NopCloser(bytes.NewReader(data))
 			// text/event-stream 会触发 shouldSkipCapture，走短路分支
-			reader := myminio.BuildBodyReader(fakeBody, 10089, "req", "text/event-stream", int64(len(data)))
+			reader := mc.BuildBodyReader(fakeBody, 10089, "req", "text/event-stream", int64(len(data)))
 
 			io.Copy(io.Discard, reader)
 			reader.Close()
@@ -152,10 +152,9 @@ func BenchmarkUpload_SkipUpload(b *testing.B) {
 	})
 }
 
-
 // TestCloseConcurrency Close 并发安全性测试
 func TestCloseConcurrency(t *testing.T) {
-	setupMinioClient()
+	mc := setupMinioClient()
 
 	// 测试多个 Reader 并发完成和关闭的场景（验证不会死锁、不会 panic）
 	const concurrency = 10
@@ -168,7 +167,7 @@ func TestCloseConcurrency(t *testing.T) {
 
 			data := []byte(strings.Repeat("E", 8192)) // 8KB 数据
 			fakeBody := io.NopCloser(bytes.NewReader(data))
-			reader := myminio.BuildBodyReader(fakeBody, int64(20000+id), "resp", "application/json", int64(len(data)))
+			reader := mc.BuildBodyReader(fakeBody, int64(20000+id), "resp", "application/json", int64(len(data)))
 
 			// 读取数据
 			n, err := io.Copy(io.Discard, reader)

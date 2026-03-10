@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"proxy_man/mproxy"
-	"proxy_man/myminio"
 	"strings"
 	"sync"
 
@@ -44,8 +43,8 @@ var upgrader = websocket.Upgrader{
 	Error: func(w http.ResponseWriter, r *http.Request, status int, reason error) {
 		w.Header().Set("Connection", "close")
 		w.WriteHeader(status)
-		w.Write([]byte("请使用websocket协议"))
-		fmt.Println(reason)
+		errorMsg := fmt.Sprintf("请使用websocket协议, 错误: %v", reason)
+		w.Write([]byte(errorMsg))
 	},
 }
 
@@ -74,12 +73,21 @@ type WebsocketServer struct {
 }
 
 // 启动控制服务器
-func (ws *WebsocketServer) StartControlServer(cm *mproxy.ConfigManager, router *mproxy.Router) bool {
+func (ws *WebsocketServer) StartControlServer() bool {
 	hub = &WebSocketHub{proxy: ws.Proxy}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/start", ws.loginHandler(ws.handleWebSocket))
-	mux.HandleFunc("/api/storage/download", myminio.HandleDownload) // MinIO 下载 API
-	mux.HandleFunc("/api/config", ws.handleConfig(cm, router))      // 配置管理 API
+	mux.HandleFunc("/api/storage/download", func(w http.ResponseWriter, r *http.Request) { // MinIO 下载 API
+		if ws.Proxy.MinioClient != nil {
+			ws.Proxy.MinioClient.HandleDownload(w, r)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"code": 503, "message": "MinIO 存储未启用",
+			})
+		}
+	})
+	mux.HandleFunc("/api/config", ws.handleConfig())                // 配置管理 API
 	mux.HandleFunc("/", handleStaticFiles)                          // 静态文件服务 + SPA fallback
 
 	corsMiddleware := cors.New(cors.Options{
@@ -181,12 +189,12 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 }
 
 // handleConfig 处理代理配置的 GET/POST 请求
-func (ws *WebsocketServer) handleConfig(cm *mproxy.ConfigManager, router *mproxy.Router) http.HandlerFunc {
+func (ws *WebsocketServer) handleConfig() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case "GET":
-			cfg := cm.GetConfig()
+			cfg := ws.Proxy.Config.GetConfig()
 			json.NewEncoder(w).Encode(cfg)
 
 		case "POST":
@@ -195,13 +203,13 @@ func (ws *WebsocketServer) handleConfig(cm *mproxy.ConfigManager, router *mproxy
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if err := cm.UpdateConfig(&updated); err != nil {
+			if err := ws.Proxy.Config.UpdateConfig(&updated); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			// 热重载路由
-			if updated.RouteEnable {
-				router.ReloadFromConfig(&updated)
+			if updated.RouteEnable && ws.Proxy.Router != nil {
+				ws.Proxy.Router.ReloadFromConfig(&updated)
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 

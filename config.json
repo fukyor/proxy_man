@@ -1,13 +1,13 @@
 {
   "Port": 8080,
-  "PublicIPs": [],
   "Verbose": true,
   "KeepAcceptEncoding": false,
   "PreventParseHeader": false,
   "KeepDestHeaders": true,
   "ConnectMaintain": false,
-  "MitmEnabled": false,
-  "HttpMitmNoTunnel": false,
+  "MitmEnabled": true,
+  "HttpMitmNoTunnel": true,
+  "PublicIPs": [],
   "RouteEnable": true,
   "ProxyNodes": [
     {

@@ -28,6 +28,7 @@ type bodyCaptReader struct {
 	doneCh        chan struct{}  // 上传完成信号
 	skipUpload    bool           // 是否跳过捕获
 	contentLength int64          // HTTP Content-Length（-1 表示未知）
+	client        *Client        // MinIO 客户端实例，替代 GlobalClient
 }
 
 // shouldSkipCapture 判断是否应该跳过捕获
@@ -46,7 +47,7 @@ func shouldSkipCapture(contentType string) bool {
 	return false
 }
 
-// BuildBodyReader 包装 Body 进行 MinIO 捕获
+// BuildBodyReader 包装 Body 进行 MinIO 捕获（*Client 方法）
 // 参数:
 //   - inner: 内层 io.ReadCloser（通常是流量统计层）
 //   - sessionID: 会话 ID
@@ -55,23 +56,24 @@ func shouldSkipCapture(contentType string) bool {
 //   - contentLength: HTTP Content-Length（-1 表示未知）
 // 返回:
 //   - *bodyCaptReader: 包装后的 Reader
-func BuildBodyReader(inner io.ReadCloser, sessionID int64, bodyType, contentType string, contentLength int64) *bodyCaptReader {
+func (c *Client) BuildBodyReader(inner io.ReadCloser, sessionID int64, bodyType, contentType string, contentLength int64) *bodyCaptReader {
 	// 如果 MinIO 未启用或内容类型需要跳过，直接返回透传 Reader
-	if !IsEnabled() || shouldSkipCapture(contentType) {
+	if !c.Config.Enabled || shouldSkipCapture(contentType) {
 		return &bodyCaptReader{inner: inner, skipUpload: true}
 	}
 
 	// 创建 Pipe 用于数据流转
 	pr, pw := io.Pipe()
 	reader := &bodyCaptReader{
-		inner:         inner,
-		pipeWriter:    pw,
+		inner:      inner,
+		pipeWriter: pw,
 		Capture: &BodyCapture{
 			ObjectKey:   GetObjectKey(sessionID, bodyType),
 			ContentType: contentType,
 		},
 		doneCh:        make(chan struct{}),
 		contentLength: contentLength,
+		client:        c,
 	}
 
 	// 启动上传协程
@@ -94,7 +96,7 @@ func (r *bodyCaptReader) uploadToMinIO(pr *io.PipeReader) {
 
 	if r.contentLength >= 0 {
 		// 策略 A：已知长度（包括 0），直接流式上传
-		info, err = GlobalClient.PutObjectWithSize(ctx, r.Capture.ObjectKey, pr, r.contentLength, r.Capture.ContentType)
+		info, err = r.client.PutObjectWithSize(ctx, r.Capture.ObjectKey, pr, r.contentLength, r.Capture.ContentType)
 	} else {
 		// 策略 B：未知长度（chunked），使用临时文件
 		info, err = r.uploadViaTempFile(ctx, pr)
@@ -147,7 +149,7 @@ func (r *bodyCaptReader) uploadViaTempFile(ctx context.Context, pr *io.PipeReade
 	// 1. 不需要担心minio上传大文件导致OOM，因为size较大时minio会使用分片上传，大概也只会消耗几十MB的内存作为minio客户端和socket之间的缓冲
 	// 2. 那为什么大文件上传不直接设置为-1，使用自动分片？因为S3 标准最多允许 10,000 个分片。10000个分片是存储桶中存储对象的分块数量，所以
 	// 导致了SDK最多可以分10000块上传，我们传入文件大小辅助minio确定分片最小大小为size/10000。有助于更小的内存占用。
-	info, err := GlobalClient.PutObjectWithSize(ctx, r.Capture.ObjectKey, tempFile, size, contentType)
+	info, err := r.client.PutObjectWithSize(ctx, r.Capture.ObjectKey, tempFile, size, contentType)
 
 	// 4. 上传完成后关闭文件（在 Remove 之前）
 	tempFile.Close()

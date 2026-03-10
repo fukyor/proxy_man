@@ -56,8 +56,8 @@ func (c *Client) GetPresignedURL(key string, expiry time.Duration, filename stri
 }
 
 // IsEnabled 检查 MinIO 是否已启用
-func IsEnabled() bool {
-	return GlobalClient != nil && GlobalClient.Config.Enabled
+func (c *Client) IsEnabled() bool {
+	return c != nil && c.Config.Enabled
 }
 
 // GetObjectKey 生成对象存储的 Key

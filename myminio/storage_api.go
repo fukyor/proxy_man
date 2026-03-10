@@ -30,9 +30,9 @@ func writeJSON(w http.ResponseWriter, v any) error {
 	return encoder.Encode(v)
 }
 
-// HandleDownload 处理下载请求
+// HandleDownload 处理下载请求（*Client 方法）
 // GET /api/storage/download?key=mitm-data/2026-02-04/10086/req
-func HandleDownload(w http.ResponseWriter, r *http.Request) {
+func (c *Client) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// 获取 ObjectKey 参数
@@ -45,17 +45,8 @@ func HandleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查 MinIO 是否启用
-	if !IsEnabled() {
-		writeJSON(w, APIResponse{
-			Code:    503,
-			Message: "MinIO 存储未启用",
-		})
-		return
-	}
-
 	// 检查对象是否存在
-	info, err := GlobalClient.StatObject(objectKey)
+	info, err := c.StatObject(objectKey)
 	if err != nil {
 		writeJSON(w, APIResponse{
 			Code:    404,
@@ -76,7 +67,7 @@ func HandleDownload(w http.ResponseWriter, r *http.Request) {
 
 	// 2. 再生成预签名下载 URL（有效期 1 小时，传入 filename）
 	expiry := 1 * time.Hour
-	presignedURL, err := GlobalClient.GetPresignedURL(objectKey, expiry, filename)
+	presignedURL, err := c.GetPresignedURL(objectKey, expiry, filename)
 	if err != nil {
 		writeJSON(w, APIResponse{
 			Code:    500,

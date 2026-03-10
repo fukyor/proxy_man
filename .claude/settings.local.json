@@ -41,7 +41,8 @@
       "Bash(npx gitnexus:*)",
       "WebSearch",
       "Bash(go doc:*)",
-      "mcp__gitnexus__cypher"
+      "mcp__gitnexus__cypher",
+      "mcp__gitnexus__detect_changes"
     ],
     "deny": [],
     "ask": [],

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httputil"
-	"proxy_man/myminio"
 	"strings"
 )
 
@@ -40,10 +39,10 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 				onClose:    nil,
 			}
 
-			// 第二层：MinIO 捕获（仅 MITM 开启且当前请求有 exchangeCapture 时执行）
-			if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled {
+			// 第二层：MinIO 捕获（仅 MITM 开启且 MinIO 客户端可用时执行）
+			if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled && ctx.core_proxy.MinioClient != nil {
 				contentType := req.Header.Get("Content-Type")
-				captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
+				captReader := ctx.core_proxy.MinioClient.BuildBodyReader(trafficReader, ctx.Session, "req", contentType, req.ContentLength)
 				ctx.exchangeCapture.reqBodyCapture = captReader.Capture
 				req.Body = captReader
 			} else {
@@ -115,10 +114,10 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 			},
 		}
 
-		// 第二层：MinIO 捕获（仅 MITM 开启且当前请求有 exchangeCapture 时执行）
-		if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled {
+		// 第二层：MinIO 捕获（仅 MITM 开启且 MinIO 客户端可用时执行）
+		if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled && ctx.core_proxy.MinioClient != nil {
 			contentType := resp.Header.Get("Content-Type")
-			captReader := myminio.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
+			captReader := ctx.core_proxy.MinioClient.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
 			ctx.exchangeCapture.respBodyCapture = captReader.Capture
 			resp.Body = captReader
 		} else {
@@ -181,13 +180,15 @@ func StatusChange(proxy *CoreHttpServer) {
 }
 
 // AddRouter 配置路由引擎（配置驱动），返回 Router 实例供 API 热更新
-func AddRouter(proxy *CoreHttpServer, cm *ConfigManager) *Router {
+func AddRouter(proxy *CoreHttpServer) *Router {
 	router := NewRouter(proxy)
 
 	// 从配置加载初始路由
-	cfg := cm.GetConfig()
-	if cfg.RouteEnable {
-		router.ReloadFromConfig(&cfg)
+	if proxy.Config != nil {
+		cfg := proxy.Config.GetConfig()
+		if cfg.RouteEnable {
+			router.ReloadFromConfig(&cfg)
+		}
 	}
 
 	// 隧道透传模式路由
@@ -206,6 +207,7 @@ func AddRouter(proxy *CoreHttpServer, cm *ConfigManager) *Router {
 		return req, nil
 	})
 
+	proxy.Router = router // 绑定到 proxy
 	return router
 }
 

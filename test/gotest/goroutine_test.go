@@ -26,38 +26,40 @@ func TestBodyReader_Leak(t *testing.T) {
 	accessKeyID := "root"
 	secretAccessKey := "12345678"
 	useSSL := false
-    bucketName := "bodydata"
+	bucketName := "bodydata"
 	tr := &http.Transport{}
 
 	client, err := minio.New(endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
-		Secure: useSSL,
-		Transport: tr, // <--- 关键点：在这里注入
+		Creds:     credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
+		Secure:    useSSL,
+		Transport: tr,
 	})
+	if err != nil {
+		t.Fatalf("MinIO 客户端初始化失败: %v", err)
+	}
 	// 检查 Bucket 是否存在（可选，确保服务是通的）
-    exists, err := client.BucketExists(context.Background(), bucketName)
-    if err != nil || !exists {
-        // 如果连不上 MinIO，测试也没法跑，可以选择跳过或报错
-        t.Logf("警告: 无法连接 MinIO (%v)，测试可能不准确", err)
-    }
-	myminio.GlobalClient = &myminio.Client{
+	exists, err := client.BucketExists(context.Background(), bucketName)
+	if err != nil || !exists {
+		t.Logf("警告: 无法连接 MinIO (%v)，测试可能不准确", err)
+	}
+	mc := &myminio.Client{
 		Client: client,
 		Config: myminio.Config{
-            Enabled: true, 
-            Bucket:  "bodydata",
-        },
+			Enabled: true,
+			Bucket:  "bodydata",
+		},
 	}
 
 	defer goleak.VerifyNone(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-    defer cancel()
-	defer tr.CloseIdleConnections() // <--- 测试结束强制关闭空闲连接
+	defer cancel()
+	defer tr.CloseIdleConnections()
 	// 2. 构造数据
-	
+
 	fakeBody := io.NopCloser(strings.NewReader("test data"))
-	
+
 	// 3. 调用被测函数（这会启动一个 goroutine）
-	reader := myminio.BuildBodyReader(fakeBody, 123, "req", "text/plain", 9)
+	reader := mc.BuildBodyReader(fakeBody, 123, "req", "text/plain", 9)
 
 	rn, err := io.Copy(io.Discard, reader)
 	if err != nil {
@@ -67,28 +69,20 @@ func TestBodyReader_Leak(t *testing.T) {
 	// 5. 关键：调用 Close。如果 Close 实现有问题，uploadToMinIO 协程就会挂起
 	done := make(chan struct{})
 	go func() {
-        // 这里的 Close 如果卡死，只会卡死这个协程，不会卡死主测试线程
-        reader.Close()
-        close(done)
-    }()
+		reader.Close()
+		close(done)
+	}()
 
-    select {
-    case <-done:
-        // A面：Close 在 1 分钟内成功返回
-        // 在这里进行正常的 Assert 验证，例如验证 Size 或 Error
-        assert.Equal(t, rn, reader.Capture.Size)
-        
-    case <-ctx.Done():
-        // B面：超时时间到了，Close 还没返回
-        // 直接判定测试失败，打印堆栈信息，强制结束当前测试用例
-        t.Fatal("❌ 测试超时：reader.Close() 发生死锁或耗时过长，已强制终止")
-    }
-    
-    // 函数返回时，defer goleak.VerifyNone 会自动执行检查
+	select {
+	case <-done:
+		assert.Equal(t, rn, reader.Capture.Size)
+	case <-ctx.Done():
+		t.Fatal("❌ 测试超时：reader.Close() 发生死锁或耗时过长，已强制终止")
+	}
 }
 
-// setupRealMinioClient 初始化真实 MinIO 客户端，返回 Transport 供测试结束时清理连接池
-func setupRealMinioClient(t *testing.T) *http.Transport {
+// setupRealMinioClient 初始化真实 MinIO 客户端，返回 (*Client, *http.Transport) 供测试使用
+func setupRealMinioClient(t *testing.T) (*myminio.Client, *http.Transport) {
 	endpoint := "127.0.0.1:9000"
 	accessKeyID := "root"
 	secretAccessKey := "12345678"
@@ -115,7 +109,7 @@ func setupRealMinioClient(t *testing.T) *http.Transport {
 		t.Skipf("MinIO 不可用，跳过真实网络测试: %v", err)
 	}
 
-	myminio.GlobalClient = &myminio.Client{
+	mc := &myminio.Client{
 		Client: client,
 		Config: myminio.Config{
 			Bucket:  bucketName,
@@ -123,14 +117,14 @@ func setupRealMinioClient(t *testing.T) *http.Transport {
 		},
 	}
 
-	return tr
+	return mc, tr
 }
 
 // TestConcurrent_RealNetwork_KnownLength 已知长度路径的高并发协程泄露测试
 // 50 个并发 goroutine，使用 100MB 真实测试文件，走流式直传路径
 // go test -v -run=TestConcurrent_RealNetwork_KnownLength -timeout 10m
 func TestConcurrent_RealNetwork_KnownLength(t *testing.T) {
-	tr := setupRealMinioClient(t)
+	mc, tr := setupRealMinioClient(t)
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	// 读取 100MB 真实测试文件（一次性加载，所有 goroutine 共享同一块内存）
@@ -155,7 +149,7 @@ func TestConcurrent_RealNetwork_KnownLength(t *testing.T) {
 			// bytes.NewReader 不复制数据，仅引用同一块 testData
 			fakeBody := io.NopCloser(bytes.NewReader(testData))
 			reqID := int64(30000 + id)
-			reader := myminio.BuildBodyReader(fakeBody, reqID, "req", "application/octet-stream", dataSize)
+			reader := mc.BuildBodyReader(fakeBody, reqID, "req", "application/octet-stream", dataSize)
 
 			rn, err := io.Copy(io.Discard, reader)
 			if err != nil {
@@ -198,7 +192,7 @@ func TestConcurrent_RealNetwork_KnownLength(t *testing.T) {
 // 30 个并发 goroutine，contentLength=-1 走临时文件路径
 // go test -v -run=TestConcurrent_RealNetwork_Chunked -timeout 10m
 func TestConcurrent_RealNetwork_Chunked(t *testing.T) {
-	tr := setupRealMinioClient(t)
+	mc, tr := setupRealMinioClient(t)
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	concurrency := 30
@@ -220,7 +214,7 @@ func TestConcurrent_RealNetwork_Chunked(t *testing.T) {
 
 			fakeBody := io.NopCloser(bytes.NewReader(testData))
 			reqID := int64(40000 + id)
-			reader := myminio.BuildBodyReader(fakeBody, reqID, "resp", "application/json", -1)
+			reader := mc.BuildBodyReader(fakeBody, reqID, "resp", "application/json", -1)
 
 			rn, err := io.Copy(io.Discard, reader)
 			if err != nil {

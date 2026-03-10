@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"proxy_man/myminio"
 	"regexp"
 	"sync"
 	"time"
@@ -30,9 +32,12 @@ type CoreHttpServer struct {
 
 	ConnectionErrHandler func(conn io.Writer, ctx *Pcontext, err error)
 
-	Logger Logger
-	Config *ConfigManager // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
-	sess   int64          // 全局日志ID，每来一个请求都加1
+	Logger      Logger
+	Config      *ConfigManager              // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
+	Router      *Router                     // 路由引擎实例
+	MinioConfig *myminio.MinioConfigManager // MinIO 配置管理器
+	MinioClient *myminio.Client             // MinIO 客户端实例
+	sess        int64                       // 全局日志ID，每来一个请求都加1
 
 	Connections sync.Map // int64 (Session) -> *ConnectionInfo
 }
@@ -80,6 +85,23 @@ func RemoveProxyHeaders(ctx *Pcontext, r *http.Request) {
 	if !isWebSocketHandshake(r.Header) {
 		r.Header.Del("Connection")
 	}
+}
+
+// InitMinio 初始化 MinIO 并挂载到 proxy 实例
+func InitMinio(proxy *CoreHttpServer) {
+	minioCM := myminio.NewMinioConfigManager(
+		filepath.Join(GetExecutableDir(), "myminio", "minio.json"),
+	)
+	proxy.MinioConfig = minioCM
+
+	client, err := myminio.NewClient(minioCM)
+	if err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+
+	proxy.MinioClient = client
+	minioCfg := minioCM.GetConfig()
+	log.Printf("MinIO 存储已启用: %s/%s", minioCfg.Endpoint, minioCfg.Bucket)
 }
 
 /*****************构建责任链request过滤*********************/

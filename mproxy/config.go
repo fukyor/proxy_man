@@ -55,15 +55,27 @@ type ConfigManager struct {
 // NewConfigManager 初始化配置管理器。如果配置文件不存在，则创建默认配置并写入
 func NewConfigManager(filePath string) *ConfigManager {
 	// 相对路径自动转换为可执行文件目录下的绝对路径
-
 	if !filepath.IsAbs(filePath) {
-		filePath = filepath.Join(getExecutableDir(), filePath)
+		filePath = filepath.Join(GetExecutableDir(), filePath)
 	}
 	cm := &ConfigManager{
 		FilePath: filePath,
 		Current:  DefaultConfig(),
 	}
 	cm.Load() // 尝试从磁盘加载
+	cfg := cm.GetConfig()
+	if len(cfg.PublicIPs) == 0 {
+		log.Println("")
+		log.Println("========================================================")
+		log.Println("⚠️  警告：未配置 PublicIPs (公网/外网 IP)")
+		log.Println("========================================================")
+		log.Println("在云服务器上部署时，强烈建议配置公网 IP 以防止代理循环")
+		log.Println("您可以通过 Web UI 控制面板进行配置")
+		log.Println("========================================================")
+		log.Println("")
+	} else {
+		log.Printf("✓ 已配置公网 IP 防环: %v", cfg.PublicIPs)
+	}
 	return cm
 }
 
@@ -86,7 +98,7 @@ func DefaultConfig() *ServerConfig {
 
 // getExecutableDir 获取可执行文件所在目录
 // go run 产生的临时二进制路径包含 "go-build"，此时回退到工作目录
-func getExecutableDir() string {
+func GetExecutableDir() string {
 	exePath, err := os.Executable()
 	if err != nil {
 		wd, err := os.Getwd()
