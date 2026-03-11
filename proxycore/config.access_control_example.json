@@ -1,0 +1,59 @@
+{
+  "Port": 8080,
+  "Verbose": true,
+  "KeepAcceptEncoding": false,
+  "PreventParseHeader": false,
+  "KeepDestHeaders": true,
+  "ConnectMaintain": false,
+  "MitmEnabled": true,
+  "HttpMitmNoTunnel": true,
+  "PublicIPs": [],
+  "RouteEnable": true,
+  "ProxyNodes": [
+    {
+      "Name": "clash",
+      "URL": "http://127.0.0.1:7892"
+    }
+  ],
+  "Routes": [
+    {
+      "Id": 2,
+      "Type": "DomainKeyword",
+      "Value": "(.*|^)google\\.com$",
+      "Action": "clash",
+      "Enable": true,
+      "Remarks": ""
+    }
+  ],
+  "AccessEnable": true,
+  "AccessRules": [
+    {
+      "Id": 1,
+      "Type": "DomainSuffix",
+      "Value": "baidu.com",
+      "Enable": true,
+      "Remarks": "拦截百度"
+    },
+    {
+      "Id": 2,
+      "Type": "DomainKeyword",
+      "Value": ".*google.*",
+      "Enable": true,
+      "Remarks": "拦截 Google 域名"
+    },
+    {
+      "Id": 3,
+      "Type": "IP",
+      "Value": "1.1.1.1",
+      "Enable": true,
+      "Remarks": "拦截 Cloudflare DNS"
+    },
+    {
+      "Id": 4,
+      "Type": "DomainSuffix",
+      "Value": "twitter.com, facebook.com, instagram.com",
+      "Enable": true,
+      "Remarks": "拦截多个社交媒体域名（逗号分隔）"
+    }
+  ]
+}

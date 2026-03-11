@@ -1,0 +1,54 @@
+{
+  "Port": 8080,
+  "Verbose": true,
+  "KeepAcceptEncoding": false,
+  "PreventParseHeader": false,
+  "KeepDestHeaders": true,
+  "ConnectMaintain": false,
+  "MitmEnabled": true,
+  "HttpMitmNoTunnel": true,
+  "PublicIPs": [],
+  "RouteEnable": true,
+  "ProxyNodes": [
+    {
+      "Name": "clash",
+      "URL": "http://127.0.0.1:7892"
+    }
+  ],
+  "Routes": [
+    {
+      "Id": 2,
+      "Type": "DomainKeyword",
+      "Value": "(.*|^)google\\.com$",
+      "Action": "clash",
+      "Enable": true,
+      "Remarks": ""
+    }
+  ],
+  "AccessEnable": true,
+  "AccessRules": [
+    {
+      "Id": 1,
+      "Type": "DomainKeyword",
+      "Value": "(.*|^)baidu\\.com$",
+      "Enable": true,
+      "Remarks": ""
+    },
+    {
+      "Id": 2,
+      "Type": "IP",
+      "Value": "127.0.0.1",
+      "Enable": true,
+      "Remarks": ""
+    }
+  ],
+  "MinioConfig": {
+    "endpoint": "127.0.0.1:9000",
+    "publicEndpoint": "",
+    "accessKeyId": "root",
+    "secretAccessKey": "12345678",
+    "useSSL": false,
+    "bucket": "bodydata",
+    "enabled": true
+  }
+}
