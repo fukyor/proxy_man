@@ -77,6 +77,13 @@ func (ctx *Pcontext) CaptureRequest(req *http.Request) {
 	if ctx.exchangeCapture == nil {
 		return
 	}
+	// 如果 req == nil（例如被过滤拦截），使用原始的 ctx.Req
+	if req == nil {
+		req = ctx.Req
+	}
+	if req == nil {
+		return
+	}
 	ctx.exchangeCapture.reqSnap = RequestSnapshot{
 		Method: req.Method,
 		URL:    req.URL.String(),

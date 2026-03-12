@@ -2,13 +2,9 @@ package myminio
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -33,13 +29,6 @@ type Client struct {
 	Config       Config
 }
 
-// MinioConfigManager 负责 MinIO 配置的线程安全读写及文件持久化
-type MinioConfigManager struct {
-	FilePath string
-	Current  *Config
-	mu       sync.RWMutex
-}
-
 // DefaultMinioConfig 提供一套开箱即用的默认 MinIO 配置
 func DefaultMinioConfig() *Config {
 	return &Config{
@@ -53,73 +42,8 @@ func DefaultMinioConfig() *Config {
 	}
 }
 
-// NewMinioConfigManager 接受绝对路径，由调用方负责拼接
-func NewMinioConfigManager(filePath string) *MinioConfigManager {
-	cm := &MinioConfigManager{
-		FilePath: filePath,
-		Current:  DefaultMinioConfig(),
-	}
-	cm.Load()
-	return cm
-}
-
-// Load 从本地磁盘读取 JSON 配置文件
-func (cm *MinioConfigManager) Load() error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	data, err := os.ReadFile(cm.FilePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("MinIO 配置文件不存在，将自动创建默认配置: %s", cm.FilePath)
-			return cm.saveLocked()
-		}
-		log.Printf("读取 MinIO 配置文件失败: %v", err)
-		return err
-	}
-	if err := json.Unmarshal(data, cm.Current); err != nil {
-		log.Printf("解析 MinIO 配置文件失败: %v", err)
-		return err
-	}
-	return nil
-}
-
-// Save 将当前内存配置持久化写入磁盘
-func (cm *MinioConfigManager) Save() error {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return cm.saveLocked()
-}
-
-func (cm *MinioConfigManager) saveLocked() error {
-	dir := filepath.Dir(cm.FilePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %w", err)
-	}
-	data, err := json.MarshalIndent(cm.Current, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmpFile := cm.FilePath + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmpFile, cm.FilePath)
-}
-
-// GetConfig 线程安全获取配置副本
-func (cm *MinioConfigManager) GetConfig() Config {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return *cm.Current
-}
-
-// NewClient 创建新的 MinIO 客户端
-func NewClient(cm *MinioConfigManager) (*Client, error) {
-	cfg := cm.GetConfig()
-	if !cfg.Enabled {
-		return nil, fmt.Errorf("致命错误: MinIO 存储未开启 (Enabled: false)。系统强制要求必须开启 MinIO！")
-	}
-
+// NewClient 创建新的 MinIO 客户端，调用方需在外层判断 cfg.Enabled
+func NewClient(cfg Config) (*Client, error) {
 	// 创建禁用代理的 Transport，防止 MinIO 内部请求受系统 HTTP_PROXY 影响
 	var customTransport *http.Transport
 	customTransport, err := minio.DefaultTransport(cfg.UseSSL)
@@ -177,7 +101,7 @@ func NewClient(cm *MinioConfigManager) (*Client, error) {
 		log.Println("⚠️  警告：未配置 MinIO PublicEndpoint (公网/外网 Endpoint)")
 		log.Println("========================================================")
 		log.Println("警告：如果未配置该项，您将无法生成并在外网完成远程直链下载！")
-		log.Println("请在 minio.json 中补充填写此项，以便代理正常下发直链。")
+		log.Println("请在 Web UI 高级设置中配置 MinIO PublicEndpoint，以便代理正常下发直链。")
 		log.Println("========================================================")
 		log.Println("")
 	}

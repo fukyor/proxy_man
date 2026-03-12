@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"proxy_man/myminio"
 	"regexp"
 	"sync"
@@ -33,13 +32,13 @@ type CoreHttpServer struct {
 	ConnectionErrHandler func(conn io.Writer, ctx *Pcontext, err error)
 
 	Logger      Logger
-	Config      *ConfigManager              // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
-	Router      *Router                     // 路由引擎实例
-	MinioConfig *myminio.MinioConfigManager // MinIO 配置管理器
-	MinioClient *myminio.Client             // MinIO 客户端实例
+	Config      *ConfigManager  // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
+	Router      *Router         // 路由引擎实例
+	MinioClient *myminio.Client // MinIO 客户端实例
 	sess        int64                       // 全局日志ID，每来一个请求都加1
 
-	Connections sync.Map // int64 (Session) -> *ConnectionInfo
+	AccessControl *AccessController // 访问控制器（支持热重载）
+	Connections   sync.Map          // int64 (Session) -> *ConnectionInfo
 }
 
 var Port = regexp.MustCompile(`:\d+$`)
@@ -87,21 +86,20 @@ func RemoveProxyHeaders(ctx *Pcontext, r *http.Request) {
 	}
 }
 
-// InitMinio 初始化 MinIO 并挂载到 proxy 实例
+// InitMinio 初始化 MinIO 并挂载到 proxy 实例（配置从 config.json 读取，重启生效）
 func InitMinio(proxy *CoreHttpServer) {
-	minioCM := myminio.NewMinioConfigManager(
-		filepath.Join(GetExecutableDir(), "myminio", "minio.json"),
-	)
-	proxy.MinioConfig = minioCM
-
-	client, err := myminio.NewClient(minioCM)
-	if err != nil {
-		log.Fatalf("❌ %v", err)
+	cfg := proxy.Config.GetConfig().MinioConfig
+	if !cfg.Enabled {
+		log.Println("MinIO 存储未启用，跳过初始化")
+		return // MinioClient 保持 nil，下游已有 nil 检查
 	}
-
+	client, err := myminio.NewClient(cfg)
+	if err != nil {
+		log.Printf("MinIO 连接失败: %v（MinioClient 为 nil，存储功能不可用）", err)
+		return // log.Printf 替代 log.Fatalf，不再崩溃退出
+	}
 	proxy.MinioClient = client
-	minioCfg := minioCM.GetConfig()
-	log.Printf("MinIO 存储已启用: %s/%s", minioCfg.Endpoint, minioCfg.Bucket)
+	log.Printf("MinIO 存储已启用: %s/%s", cfg.Endpoint, cfg.Bucket)
 }
 
 /*****************构建责任链request过滤*********************/

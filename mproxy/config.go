@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"proxy_man/myminio"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,15 @@ type RouteRule struct {
 	Type    string `json:"Type"`    // "DomainSuffix" | "DomainKeyword" | "IP"
 	Value   string `json:"Value"`   // "twitter.com" 等值
 	Action  string `json:"Action"`  // 直接填写拨号器名称，如 "clash" 或 "Direct"
+	Enable  bool   `json:"Enable"`  // 该条规则的独立开关
+	Remarks string `json:"Remarks"` // 用户备注
+}
+
+// AccessRule 访问控制规则配置
+type AccessRule struct {
+	Id      int    `json:"Id"`      // 前端生成的唯一 ID
+	Type    string `json:"Type"`    // "DomainSuffix" | "DomainKeyword" | "IP"
+	Value   string `json:"Value"`   // "twitter.com" 等值，逗号分隔支持多个
 	Enable  bool   `json:"Enable"`  // 该条规则的独立开关
 	Remarks string `json:"Remarks"` // 用户备注
 }
@@ -43,6 +53,13 @@ type ServerConfig struct {
 	RouteEnable bool        `json:"RouteEnable"`
 	ProxyNodes  []ProxyNode `json:"ProxyNodes"` // 代理节点列表
 	Routes      []RouteRule `json:"Routes"`
+
+	// 访问控制相关配置
+	AccessEnable bool         `json:"AccessEnable"` // 访问控制总开关
+	AccessRules  []AccessRule `json:"AccessRules"`  // 访问控制规则列表
+
+	// MinIO 对象存储配置
+	MinioConfig myminio.Config `json:"MinioConfig"`
 }
 
 // ConfigManager 负责配置的线程安全读写及文件持久化
@@ -93,6 +110,9 @@ func DefaultConfig() *ServerConfig {
 		RouteEnable:        false,
 		ProxyNodes:         []ProxyNode{},
 		Routes:             []RouteRule{},
+		AccessEnable:       false,
+		AccessRules:        []AccessRule{},
+		MinioConfig:        *myminio.DefaultMinioConfig(),
 	}
 }
 
@@ -148,6 +168,10 @@ func (cm *ConfigManager) Load() error {
 		log.Printf("解析配置文件失败: %v", err)
 		return err
 	}
+
+	// 强制写回磁盘一次：确保像 MinIO 这样新增的默认配置字段，
+	// 能够回写到已有的 config.json 文件中，从而让用户可见
+	cm.saveLocked()
 
 	return nil
 }

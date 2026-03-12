@@ -1,6 +1,7 @@
 package mproxy
 
 import (
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -181,4 +182,76 @@ func ContentTypeHook(typ string, types ...string) RespCondition {
 		}
 		return false
 	})
+}
+
+// ======================== 规则构建函数 ========================
+// 这些函数用于访问控制和路由功能，返回 ReqCondition 供 HookOnReq/DoFunc 使用
+
+// DomainSuffixRule 域名后缀匹配规则（自动剥离端口，小写不区分）
+func DomainSuffixRule(suffixes ...string) ReqConditionFunc {
+	for i, s := range suffixes {
+		suffixes[i] = strings.ToLower(s)
+	}
+	return func(req *http.Request, ctx *Pcontext) bool {
+		host := req.URL.Host
+		if host == "" {
+			host = req.Host
+		}
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(host)
+		for _, suffix := range suffixes {
+			if host == suffix || strings.HasSuffix(host, "."+suffix) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// DomainKeywordRule 域名正则匹配规则（自动剥离端口，忽略大小写）
+func DomainKeywordRule(patterns ...string) ReqConditionFunc {
+	regs := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		if r, err := regexp.Compile("(?i)" + p); err == nil {
+			regs = append(regs, r)
+		}
+	}
+	return func(req *http.Request, ctx *Pcontext) bool {
+		host := req.URL.Host
+		if host == "" {
+			host = req.Host
+		}
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		for _, r := range regs {
+			if r.MatchString(host) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// IPRule IP 精确匹配规则（仅匹配纯 IP，不匹配域名）
+func IPRule(ipList ...string) ReqConditionFunc {
+	ipSet := make(map[string]bool, len(ipList))
+	for _, ip := range ipList {
+		ipSet[ip] = true
+	}
+	return func(req *http.Request, ctx *Pcontext) bool {
+		host := req.URL.Host
+		if host == "" {
+			host = req.Host
+		}
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if net.ParseIP(host) != nil {
+			return ipSet[host]
+		}
+		return false
+	}
 }

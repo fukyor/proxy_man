@@ -23,6 +23,18 @@ type LogMessage struct {
 // 全局日志 Channel
 var LogChan = make(chan LogMessage, 1000)
 
+// InterceptLogMessage 单条拦截日志消息（用于 WebSocket 实时推送）
+type InterceptLogMessage struct {
+	ClientIP  string    `json:"client_ip"`
+	Target    string    `json:"target"`
+	RuleType  string    `json:"rule_type"`
+	RuleValue string    `json:"rule_value"`
+	Time      time.Time `json:"time"`
+}
+
+// InterceptLogChan 拦截日志推送通道
+var InterceptLogChan = make(chan InterceptLogMessage, 500)
+
 // 日志收集器，包装原有 Logger
 type LogCollector struct {
 	Underlying Logger

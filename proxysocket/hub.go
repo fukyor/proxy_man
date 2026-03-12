@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-	//"log"
 	"proxy_man/mproxy"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +18,8 @@ func (h *WebSocketHub) updateSubscription(sub *Subscription, msg map[string]any)
 		sub.Connections = contains(topics, "connections")
 		sub.Logs = contains(topics, "logs")
 		sub.MitmDetail = contains(topics, "mitm_detail")
+		sub.InterceptLogs = contains(topics, "intercept_logs")
+		sub.UserTraffic = contains(topics, "user_traffic")
 	}
 	if logLevel, ok := msg["logLevel"].(string); ok {
 		sub.LogLevel = logLevel
@@ -67,6 +68,10 @@ func (h *WebSocketHub) broadcastToTopic(topic string, msg any) {
 			shouldSend = sub.Connections
 		case "mitm_detail":
 			shouldSend = sub.MitmDetail
+		case "intercept_logs":
+			shouldSend = sub.InterceptLogs
+		case "user_traffic":
+			shouldSend = sub.UserTraffic
 		}
 
 		if shouldSend {
@@ -124,7 +129,7 @@ func (h *WebSocketHub) StartTrafficPusher() {
 
 // 连接推送器（每 500ms 推送一次，Active 优先、Session 倒序，最多 350 条）
 func (h *WebSocketHub) StartConnectionPusher() {
-	const tombstoneRetention = 2500 * time.Millisecond
+	const tombstoneRetention = 3000 * time.Millisecond
 	const maxConnections = 350
 
 	go func() {
@@ -284,10 +289,44 @@ func (h *WebSocketHub) sendLogBatch(batch []*mproxy.LogMessage) {
 
 var logLevels = map[string]int{"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
 
+// StartInterceptLogPusher 拦截日志推送器（批量收集 + 500ms 定时广播）
+func (h *WebSocketHub) StartInterceptLogPusher() {
+	go func() {
+		batch := make([]mproxy.InterceptLogMessage, 0, 200)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case msg, ok := <-mproxy.InterceptLogChan:
+				if !ok {
+					return
+				}
+				batch = append(batch, msg)
+				if len(batch) >= 100 {
+					h.broadcastToTopic("intercept_logs", map[string]any{
+						"type": "intercept_log_batch",
+						"data": batch,
+					})
+					batch = batch[:0]
+				}
+			case <-ticker.C:
+				if len(batch) > 0 {
+					h.broadcastToTopic("intercept_logs", map[string]any{
+						"type": "intercept_log_batch",
+						"data": batch,
+					})
+					batch = batch[:0]
+				}
+			}
+		}
+	}()
+}
+
 // MITM Exchange 详细信息推送器（批量收集 + 同步广播，消除 goroutine 风暴）
 func (h *WebSocketHub) StartMitmDetailPusher() {
 	go func() {
-		batch := make([]*mproxy.HttpExchange, 0, 100)
+		batch := make([]*mproxy.HttpExchange, 0, 200)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -298,7 +337,7 @@ func (h *WebSocketHub) StartMitmDetailPusher() {
 					return
 				}
 				batch = append(batch, exchange)
-				if len(batch) >= 200 {
+				if len(batch) >= 100 {
 					h.sendMitmBatch(batch)
 					batch = batch[:0]
 				}
@@ -319,4 +358,29 @@ func (h *WebSocketHub) sendMitmBatch(batch []*mproxy.HttpExchange) {
 		"data": batch,
 	}
 	h.broadcastToTopic("mitm_detail", msg)
+}
+
+// StartUserTrafficPusher 用户流量推送器（1.5 秒间隔推送 IP-Host 流量快照）
+func (h *WebSocketHub) StartUserTrafficPusher() {
+	go func() {
+		ticker := time.NewTicker(1500 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			// 遍历连接（包含处于墓碑期的 Closed 连接），构建在线 IP 集合
+			activeIPs := make(map[string]bool)
+			h.proxy.Connections.Range(func(_, value any) bool {
+				info := value.(*mproxy.ConnectionInfo)
+				activeIPs[mproxy.ExtractIP(info.RemoteAddr)] = true
+				return true
+			})
+			snapshot := mproxy.GlobalUserTraffic.Snapshot(activeIPs)
+			if len(snapshot) == 0 {
+				continue
+			}
+			h.broadcastToTopic("user_traffic", map[string]any{
+				"type": "user_traffic",
+				"data": snapshot,
+			})
+		}
+	}()
 }

@@ -7,9 +7,10 @@ import (
 // tunnelTrafficReader 统计读取的流量
 type tunnelTrafficClient struct {
 	halfClosable
-	nread int64
-	nwrite int64
-	onClose func()
+	nread     int64
+	nwrite    int64
+	onClose   func()
+	userStats *UserHostStats // 用户流量统计指针
 }
 
 func newTunnelTrafficClient(conn net.Conn) (*tunnelTrafficClient, bool) {
@@ -28,6 +29,9 @@ func (r *tunnelTrafficClient) Read(p []byte) (n int, err error) {
 	n, err = r.halfClosable.Read(p)
 	r.nread += int64(n)
 	GlobalTrafficUp.Add(int64(n)) // 客户端连接读取，Read = 上行流量
+	if r.userStats != nil {
+		r.userStats.Up.Add(int64(n))
+	}
 	return n, err
 }
 
@@ -35,6 +39,9 @@ func (w *tunnelTrafficClient) Write(p []byte) (n int, err error) {
 	n, err = w.halfClosable.Write(p)
 	w.nwrite += int64(n)
 	GlobalTrafficDown.Add(int64(n)) // 客户端连接响应，write = 下行流量
+	if w.userStats != nil {
+		w.userStats.Down.Add(int64(n))
+	}
 	return n, err
 }
 
@@ -49,10 +56,11 @@ func (c *tunnelTrafficClient) Close() error {
 
 
 type tunnelTrafficClientNoClosable struct {
-	conn net.Conn
-	nread int64
-	nwrite int64
-	onClose func()
+	conn      net.Conn
+	nread     int64
+	nwrite    int64
+	onClose   func()
+	userStats *UserHostStats // 用户流量统计指针
 }
 
 func newtunnelTrafficClientNoClosable(conn net.Conn) (*tunnelTrafficClientNoClosable){
@@ -67,6 +75,9 @@ func (r *tunnelTrafficClientNoClosable) Read(p []byte) (n int, err error) {
 	n, err = r.conn.Read(p)
 	r.nread += int64(n)
 	GlobalTrafficUp.Add(int64(n)) // 客户端连接读取，Read = 上行流量
+	if r.userStats != nil {
+		r.userStats.Up.Add(int64(n))
+	}
 	return n, err
 }
 
@@ -74,6 +85,9 @@ func (w *tunnelTrafficClientNoClosable) Write(p []byte) (n int, err error) {
 	n, err = w.conn.Write(p)
 	w.nwrite += int64(n)
 	GlobalTrafficDown.Add(int64(n)) // 客户端连接响应，write = 下行流量
+	if w.userStats != nil {
+		w.userStats.Down.Add(int64(n))
+	}
 	return n, err
 }
 

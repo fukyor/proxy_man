@@ -49,6 +49,7 @@ var (
 	OkConnect       = &ConnectAction{Action: ConnectAccept, TLSConfig: TLSConfigFromCA(&Proxy_ManCa)}
 	HTTPMitmConnect = &ConnectAction{Action: ConnectHTTPMitm, TLSConfig: TLSConfigFromCA(&Proxy_ManCa)}
 	MitmConnect     = &ConnectAction{Action: ConnectMitm, TLSConfig: TLSConfigFromCA(&Proxy_ManCa)}
+	RejectConnect   = &ConnectAction{Action: ConnectReject}
 )
 
 type ConnectAction struct {
@@ -397,6 +398,19 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		proxyClientTCP, clientOK := newTunnelTrafficClient(connFromClinet)
 		proxyClientTCPNo := newtunnelTrafficClientNoClosable(connFromClinet)
 
+		// 设置用户流量统计指针（Tunnel 模式）
+		{
+			clientIP := getClientIP(r)
+			monitorHost := ExtractHost(r.URL.Host)
+			if clientIP != "" && clientIP != "unknown" && monitorHost != "" {
+				uStats := GlobalUserTraffic.GetOrCreateStats(clientIP, monitorHost)
+				if proxyClientTCP != nil {
+					proxyClientTCP.userStats = uStats
+				}
+				proxyClientTCPNo.userStats = uStats
+			}
+		}
+
 		Counter_Ctxt := &Pcontext{
 			core_proxy:                    proxy,
 			Req:                           r,
@@ -405,7 +419,11 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			Session:                       topctx.Session,
 		}
 
-		url_, err := url.Parse("http:" + r.URL.String())
+		scheme := "http"
+		if strings.HasSuffix(host, ":443") || strings.HasSuffix(host, ":8443") {
+			scheme = "https"
+		}
+		url_, err := url.Parse(scheme + "://" + r.URL.String())
 		// 注册连接（隧道模式作为整体长连接）
 		proxy.Connections.Store(Counter_Ctxt.Session, &ConnectionInfo{
 			Session:     topctx.Session,
@@ -577,6 +595,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				ctxt.CaptureRequest(req)
 
 				if resp == nil {
+					// 只有当 resp==nil 也就是要放行去服务端时，才有 err（协议解析得到的 err）判断意义
 					if err != nil {
 						ctxt.SetCaptureError(err)
 						if req.URL != nil {
@@ -590,13 +609,14 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					RemoveProxyHeaders(ctxt, req)
 
 					// 100-continue 由 Transport 自动处理，无需特殊代码
-					resp, err = func() (*http.Response, error) {
+					var rtErr error
+					resp, rtErr = func() (*http.Response, error) {
 						defer req.Body.Close()
 						return ctxt.RoundTrip(req)
 					}()
-					if err != nil {
-						ctxt.SetCaptureError(err)
-						ctxt.WarnP("Cannot read response from mitm'd server %v", err)
+					if rtErr != nil {
+						ctxt.SetCaptureError(rtErr)
+						ctxt.WarnP("Cannot read response from mitm'd server %v", rtErr)
 						return false
 					}
 					ctxt.Log_P("resp %v", resp.Status)

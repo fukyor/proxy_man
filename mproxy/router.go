@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -270,56 +269,4 @@ func (r *Router) ReloadFromConfig(cfg *ServerConfig) error {
 
 	r.proxy.Logger.Printf("INFO: 配置已热重载，路由已热重载，%d 条规则，%d 个节点", len(newRules), len(newDialers)-1)
 	return nil
-}
-
-// ======================== 规则构建函数 ========================
-
-// DomainSuffixRule 域名后缀匹配规则（自动剥离端口）
-func DomainSuffixRule(suffixes ...string) ReqConditionFunc {
-	for i, s := range suffixes {
-		suffixes[i] = strings.ToLower(s)
-	}
-	return func(req *http.Request, ctx *Pcontext) bool {
-		host := extractHost(req)
-		for _, suffix := range suffixes {
-			if host == suffix || strings.HasSuffix(host, "."+suffix) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-// DomainKeywordRule 域名正则匹配规则（自动剥离端口，忽略大小写）
-func DomainKeywordRule(patterns ...string) ReqConditionFunc {
-	regs := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		if r, err := regexp.Compile("(?i)" + p); err == nil {
-			regs = append(regs, r)
-		}
-	}
-	return func(req *http.Request, ctx *Pcontext) bool {
-		host := extractHost(req)
-		for _, r := range regs {
-			if r.MatchString(host) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-// IPRule IP 精确匹配规则
-func IPRule(ipList ...string) ReqConditionFunc {
-	ipSet := make(map[string]bool, len(ipList))
-	for _, ip := range ipList {
-		ipSet[ip] = true
-	}
-	return func(req *http.Request, ctx *Pcontext) bool {
-		host := extractHost(req)
-		if net.ParseIP(host) != nil {
-			return ipSet[host]
-		}
-		return false
-	}
 }

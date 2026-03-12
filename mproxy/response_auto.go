@@ -29,3 +29,9 @@ const (
 func TextResponse(r *http.Request, text string) *http.Response {
 	return NewResponse(r, ContentTypeText, http.StatusAccepted, text)
 }
+
+// ForbiddenResponse 返回 403 Forbidden 响应（用于访问控制拦截）
+// 注意：访问控制应使用 403 而非 202（StatusAccepted）
+func ForbiddenResponse(r *http.Request, message string) *http.Response {
+	return NewResponse(r, ContentTypeText, http.StatusForbidden, message)
+}

@@ -37,7 +37,7 @@ func handleTestDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
     // 从磁盘读取文件
-    filePath := filepath.Join(`E:\D\zuoyewenjian\MyProject\proxy_man\test\data`, filename)
+    filePath := filepath.Join(`data`, filename)
 
     file, err := os.Open(filePath)
     if err != nil {
@@ -104,7 +104,7 @@ func handleTestDownloadChunked(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath := filepath.Join(`E:\D\zuoyewenjian\MyProject\proxy_man\test\data`, filename)
+	filePath := filepath.Join(`data`, filename)
 	file, err := os.Open(filePath)
 	if err != nil {
 		http.Error(w, "文件不存在", http.StatusNotFound)

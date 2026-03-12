@@ -50,12 +50,14 @@ var upgrader = websocket.Upgrader{
 
 // 订阅信息
 type Subscription struct {
-	Traffic     bool
-	Connections bool
-	Logs        bool
-	LogLevel    string
-	MitmDetail  bool       // MITM Exchange 详细信息
-	writeMu     sync.Mutex // 保护 WebSocket 写操作
+	Traffic       bool
+	Connections   bool
+	Logs          bool
+	LogLevel      string
+	MitmDetail    bool       // MITM Exchange 详细信息
+	InterceptLogs bool       // 拦截日志实时推送
+	UserTraffic   bool       // 用户 IP 流量监控
+	writeMu       sync.Mutex // 保护 WebSocket 写操作
 }
 
 // WebSocket Hub
@@ -87,8 +89,8 @@ func (ws *WebsocketServer) StartControlServer() bool {
 			})
 		}
 	})
-	mux.HandleFunc("/api/config", ws.handleConfig())                // 配置管理 API
-	mux.HandleFunc("/", handleStaticFiles)                          // 静态文件服务 + SPA fallback
+	mux.HandleFunc("/api/config", ws.handleConfig()) // 配置管理 API
+	mux.HandleFunc("/", handleStaticFiles)           // 静态文件服务 + SPA fallback
 
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -102,6 +104,8 @@ func (ws *WebsocketServer) StartControlServer() bool {
 	hub.StartConnectionPusher()
 	hub.StartLogPusher()
 	hub.StartMitmDetailPusher()
+	hub.StartInterceptLogPusher()
+	hub.StartUserTrafficPusher()
 
 	var err error
 	go func() {
@@ -184,6 +188,18 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 			})
 			// 关闭目标连接自身
 			hub.proxy.CloseAndRemoveConnection(id)
+		case "closeUserConnections":
+			targetIP, _ := msg["ip"].(string)
+			if targetIP == "" {
+				break
+			}
+			hub.proxy.Connections.Range(func(key, value any) bool {
+				info := value.(*mproxy.ConnectionInfo)
+				if mproxy.ExtractIP(info.RemoteAddr) == targetIP {
+					hub.proxy.CloseAndRemoveConnection(info.Session)
+				}
+				return true
+			})
 		}
 	}
 }
@@ -210,6 +226,10 @@ func (ws *WebsocketServer) handleConfig() http.HandlerFunc {
 			// 热重载路由
 			if updated.RouteEnable && ws.Proxy.Router != nil {
 				ws.Proxy.Router.ReloadFromConfig(&updated)
+			}
+			// 热重载访问控制
+			if ws.Proxy.AccessControl != nil {
+				ws.Proxy.AccessControl.ReloadFromConfig()
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 

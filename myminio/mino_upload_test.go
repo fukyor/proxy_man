@@ -14,13 +14,16 @@ import (
 var testClient *Client
 
 func setUp() {
-	// 使用 MinioConfigManager 初始化
-	cm := NewMinioConfigManager("minio_test.json")
-	cm.Current.Enabled = true
-	cm.Current.Endpoint = "127.0.0.1:9000"
-	cm.Current.Bucket = "bodydata"
+	cfg := Config{
+		Enabled:         true,
+		Endpoint:        "127.0.0.1:9000",
+		AccessKeyID:     "root",
+		SecretAccessKey: "12345678",
+		UseSSL:          false,
+		Bucket:          "bodydata",
+	}
 
-	client, err := NewClient(cm)
+	client, err := NewClient(cfg)
 	if err != nil {
 		log.Printf("警告: MinIO 初始化失败: %v，Body 捕获功能将被禁用", err)
 		return

@@ -58,9 +58,8 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 
 	if resp == nil {
 		RemoveProxyHeaders(ctxt, r)
+		resp, err = ctxt.RoundTrip(r) // 发起一次http请求
 	}
-
-	resp, err = ctxt.RoundTrip(r) // 发起一次http请求
 
 	if err != nil {
 		ctxt.Error = err
@@ -69,7 +68,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		// Body是顶层接口，底层是body结构体。
 		// 虽然是浅拷贝，底层全部从同一个socket中读取数据，但是可以当resp.Body重新指向另一个body时，保证原数据不丢失
 		oriBody = resp.Body
-		defer oriBody.Close() // 和linux一样，关闭socket fd后断开tcp连接
+		defer oriBody.Close()
 	}
 
 	resp = proxy.filterResponse(resp, ctxt)

@@ -37,7 +37,10 @@ func main() {
 	// 6. 路由（无需额外参数）
 	mproxy.AddRouter(proxy)
 
-	// 7. WebSocket 控制服务（无需额外参数）
+	// 7. 访问控制（需在 AddRouter 之后）
+	mproxy.AddAccessControl(proxy)
+
+	// 8. WebSocket 控制服务（无需额外参数）
 	ws := &proxysocket.WebsocketServer{
 		Proxy:  proxy,
 		Addr:   ":8000",
@@ -49,7 +52,7 @@ func main() {
 		log.Fatal("websocket server启动失败")
 	}
 
-	// 8. 代理服务器
+	// 9. 代理服务器
 	s := http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
 		Handler: proxy,

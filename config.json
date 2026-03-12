@@ -24,5 +24,31 @@
       "Enable": true,
       "Remarks": ""
     }
-  ]
+  ],
+  "AccessEnable": true,
+  "AccessRules": [
+    {
+      "Id": 1,
+      "Type": "DomainKeyword",
+      "Value": "(.*|^)baidu\\.com$",
+      "Enable": true,
+      "Remarks": ""
+    },
+    {
+      "Id": 2,
+      "Type": "IP",
+      "Value": "127.0.0.1",
+      "Enable": true,
+      "Remarks": ""
+    }
+  ],
+  "MinioConfig": {
+    "endpoint": "127.0.0.1:9000",
+    "publicEndpoint": "",
+    "accessKeyId": "root",
+    "secretAccessKey": "12345678",
+    "useSSL": false,
+    "bucket": "bodydata",
+    "enabled": true
+  }
 }
