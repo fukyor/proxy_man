@@ -200,6 +200,25 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 				}
 				return true
 			})
+		case "cleanOfflineUsers":
+			// 扫描当前连接表，构建受保护 IP 集合（Active + 墓碑期 Closed）
+			protectedIPs := make(map[string]bool)
+			hub.proxy.Connections.Range(func(_, value any) bool {
+				info := value.(*mproxy.ConnectionInfo)
+				protectedIPs[mproxy.ExtractIP(info.RemoteAddr)] = true
+				return true
+			})
+			// 清理
+			deleted := mproxy.GlobalUserTraffic.CleanOfflineUsers(protectedIPs)
+			// 立即广播最新快照（protectedIPs 同时作为 displayOnlineIPs 使用）
+			snapshot := mproxy.GlobalUserTraffic.Snapshot(protectedIPs)
+			hub.broadcastToTopic("user_traffic", map[string]any{
+				"type": "user_traffic",
+				"data": snapshot,
+			})
+			if deleted > 0 {
+				hub.proxy.Logger.Printf("INFO %d 清理离线用户: 删除 %d 条记录", 0, deleted)
+			}
 		}
 	}
 }

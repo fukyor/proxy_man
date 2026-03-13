@@ -374,9 +374,6 @@ func (h *WebSocketHub) StartUserTrafficPusher() {
 				return true
 			})
 			snapshot := mproxy.GlobalUserTraffic.Snapshot(activeIPs)
-			if len(snapshot) == 0 {
-				continue
-			}
 			h.broadcastToTopic("user_traffic", map[string]any{
 				"type": "user_traffic",
 				"data": snapshot,

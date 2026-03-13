@@ -84,6 +84,20 @@ func (m *GlobalUserMonitor) Snapshot(activeIPs map[string]bool) []UserSnapshotIt
 	return result
 }
 
+// CleanOfflineUsers 清理不受保护的离线 IP 流量记录，返回删除数量
+func (m *GlobalUserMonitor) CleanOfflineUsers(protectedIPs map[string]bool) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted := 0
+	for ip := range m.Users {
+		if !protectedIPs[ip] {
+			delete(m.Users, ip)
+			deleted++
+		}
+	}
+	return deleted
+}
+
 // 快照序列化辅助结构
 type UserSnapshotItem struct {
 	IP        string        `json:"ip"`
