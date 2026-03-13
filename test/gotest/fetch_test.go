@@ -28,7 +28,7 @@ const (
 	HttpsBackendBaseURL = "https://127.0.0.1:9002"
 
 	// 测试数据目录
-	TestDataDir = `E:\D\zuoyewenjian\MyProject\proxy_man\test\data`
+	TestDataDir = `../data`
 )
 
 // ===========================================

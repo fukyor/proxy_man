@@ -272,7 +272,13 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 
 		ctxt.CaptureRequest(req)
 
-		if resp == nil {
+		if resp != nil {
+			// 本地拦截分支：标记跳过 Exchange 发送，关闭已包装的 req.Body 释放 MinIO 管道
+			ctxt.SetCaptureSkip()
+			if req.Body != nil {
+				req.Body.Close()
+			}
+		} else {
 			RemoveProxyHeaders(ctxt, req)
 			var err error
 			resp, err = func() (*http.Response, error) {

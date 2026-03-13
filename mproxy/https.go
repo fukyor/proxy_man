@@ -594,7 +594,13 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				req, resp := proxy.filterRequest(req, ctxt)
 				ctxt.CaptureRequest(req)
 
-				if resp == nil {
+				if resp != nil {
+					// 本地拦截分支：标记跳过 Exchange 发送，关闭已包装的 req.Body 释放 MinIO 管道
+					ctxt.SetCaptureSkip()
+					if req.Body != nil {
+						req.Body.Close()
+					}
+				} else {
 					// 只有当 resp==nil 也就是要放行去服务端时，才有 err（协议解析得到的 err）判断意义
 					if err != nil {
 						ctxt.SetCaptureError(err)

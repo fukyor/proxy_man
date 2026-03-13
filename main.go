@@ -31,14 +31,14 @@ func main() {
 		}
 	}()
 
-	// 5. 流量监控
-	mproxy.AddTrafficMonitor(proxy)
-
-	// 6. 路由（无需额外参数）
+	// 5. 路由（无需额外参数）
 	mproxy.AddRouter(proxy)
 
-	// 7. 访问控制（需在 AddRouter 之后）
+	// 6. 访问控制（需在 AddRouter 之后）
 	mproxy.AddAccessControl(proxy)
+
+	// 7. 流量监控（需在 AddAccessControl 之后，确保被拦截请求的 Body 不被 MinIO 包装）
+	mproxy.AddTrafficMonitor(proxy)
 
 	// 8. WebSocket 控制服务（无需额外参数）
 	ws := &proxysocket.WebsocketServer{

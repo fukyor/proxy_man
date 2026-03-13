@@ -40,6 +40,13 @@
       "Value": "127.0.0.1",
       "Enable": true,
       "Remarks": ""
+    },
+    {
+      "Id": 3,
+      "Type": "DomainSuffix",
+      "Value": "localhost",
+      "Enable": true,
+      "Remarks": ""
     }
   ],
   "MinioConfig": {

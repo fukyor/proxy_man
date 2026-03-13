@@ -324,8 +324,8 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 			},
 		}
 
-		// 第二层：MinIO 捕获（仅 MITM 开启且 MinIO 客户端可用时执行）
-		if ctx.exchangeCapture != nil && ctx.core_proxy.Config.GetConfig().MitmEnabled && ctx.core_proxy.MinioClient != nil {
+		// 第二层：MinIO 捕获（仅 MITM 开启且 MinIO 客户端可用且未被拦截时执行）
+		if ctx.exchangeCapture != nil && !ctx.exchangeCapture.skipSend && ctx.core_proxy.Config.GetConfig().MitmEnabled && ctx.core_proxy.MinioClient != nil {
 			contentType := resp.Header.Get("Content-Type")
 			captReader := ctx.core_proxy.MinioClient.BuildBodyReader(trafficReader, ctx.Session, "resp", contentType, resp.ContentLength)
 			ctx.exchangeCapture.respBodyCapture = captReader.Capture
