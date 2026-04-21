@@ -56,8 +56,9 @@ func NewDirectDialer(proxy *CoreHttpServer) *DirectDialer {
 		// 自环检测
 		if proxy.Config != nil {
 			cfg := proxy.Config.GetConfig()
-			if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
-				return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+			ports := proxyListenPorts(cfg)
+			if isSelfLoop(addr, ports, cfg.PublicIPs) {
+				return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy ports %v", addr, ports)
 			}
 		}
 		return (&net.Dialer{
@@ -75,8 +76,9 @@ func (d *DirectDialer) Dial(network, addr string) (net.Conn, error) {
 	// 自环检测
 	if d.proxy.Config != nil {
 		cfg := d.proxy.Config.GetConfig()
-		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
-			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		ports := proxyListenPorts(cfg)
+		if isSelfLoop(addr, ports, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy ports %v", addr, ports)
 		}
 	}
 	return net.DialTimeout(network, addr, 6*time.Second)
@@ -120,8 +122,9 @@ func (d *HttpProxyDialer) Dial(network, addr string) (net.Conn, error) {
 	// 检查目标地址是否是自环（防止配置错误）
 	if d.proxy.Config != nil {
 		cfg := d.proxy.Config.GetConfig()
-		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
-			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		ports := proxyListenPorts(cfg)
+		if isSelfLoop(addr, ports, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy ports %v", addr, ports)
 		}
 	}
 	return d.dialer(network, addr)

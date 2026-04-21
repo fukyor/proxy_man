@@ -1,5 +1,6 @@
 {
   "Port": 8080,
+  "HTTPSPort": 8443,
   "Verbose": true,
   "KeepAcceptEncoding": false,
   "PreventParseHeader": false,

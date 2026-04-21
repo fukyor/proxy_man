@@ -35,7 +35,7 @@ type CoreHttpServer struct {
 	Config      *ConfigManager  // 并发安全的配置管理器，所有配置读取通过 Config.GetConfig()
 	Router      *Router         // 路由引擎实例
 	MinioClient *myminio.Client // MinIO 客户端实例
-	sess        int64                       // 全局日志ID，每来一个请求都加1
+	sess        int64           // 全局日志ID，每来一个请求都加1
 
 	AccessControl *AccessController // 访问控制器（支持热重载）
 	Connections   sync.Map          // int64 (Session) -> *ConnectionInfo
@@ -151,8 +151,9 @@ func NewCoreHttpSever() *CoreHttpServer {
 			// 运行时检查配置（此时 core_proxy.Config 已在 main.go 中初始化）
 			if core_proxy.Config != nil {
 				cfg := core_proxy.Config.GetConfig()
-				if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
-					return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+				ports := proxyListenPorts(cfg)
+				if isSelfLoop(addr, ports, cfg.PublicIPs) {
+					return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy ports %v", addr, ports)
 				}
 			}
 			return (&net.Dialer{

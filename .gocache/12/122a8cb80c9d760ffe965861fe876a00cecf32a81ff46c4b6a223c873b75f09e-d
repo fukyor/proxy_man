@@ -1,0 +1,4 @@
+./config.go
+./minioUpload.go
+./minioUtils.go
+./storage_api.go

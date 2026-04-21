@@ -134,8 +134,9 @@ func (proxy *CoreHttpServer) dial(ctx *Pcontext, network, addr string) (c net.Co
 	// 自环检测
 	if proxy.Config != nil {
 		cfg := proxy.Config.GetConfig()
-		if isSelfLoop(addr, cfg.Port, cfg.PublicIPs) {
-			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy port %d", addr, cfg.Port)
+		ports := proxyListenPorts(cfg)
+		if isSelfLoop(addr, ports, cfg.PublicIPs) {
+			return nil, fmt.Errorf("proxy self-loop detected: target %s matches proxy ports %v", addr, ports)
 		}
 	}
 

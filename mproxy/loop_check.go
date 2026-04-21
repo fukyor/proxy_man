@@ -70,19 +70,38 @@ func getLocalIPs() []string {
 	return localIPs
 }
 
+// proxyListenPorts 从配置中提取当前代理监听端口集合。
+func proxyListenPorts(cfg ServerConfig) []int {
+	ports := make([]int, 0, 2)
+	if cfg.Port > 0 {
+		ports = append(ports, cfg.Port)
+	}
+	if cfg.HTTPSPort > 0 && cfg.HTTPSPort != cfg.Port {
+		ports = append(ports, cfg.HTTPSPort)
+	}
+	return ports
+}
+
 // isSelfLoop 检查目标地址是否指向代理服务器自身
 // addr 格式：host:port，例如 "117.72.191.85:8080"
-// proxyPort: 代理服务器监听端口
+// proxyPorts: 代理服务器监听端口集合
 // publicIPs: 配置的公网/外网 IP 列表
-func isSelfLoop(addr string, proxyPort int, publicIPs []string) bool {
+func isSelfLoop(addr string, proxyPorts []int, publicIPs []string) bool {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		// 无法解析地址，不是自环
 		return false
 	}
 
-	// 检查端口是否匹配
-	if portStr != strconv.Itoa(proxyPort) {
+	// 检查端口是否命中任一监听端口
+	portMatched := false
+	for _, proxyPort := range proxyPorts {
+		if portStr == strconv.Itoa(proxyPort) {
+			portMatched = true
+			break
+		}
+	}
+	if !portMatched {
 		// 端口不匹配，不是自环
 		return false
 	}

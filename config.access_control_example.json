@@ -1,5 +1,6 @@
 {
   "Port": 8080,
+  "HTTPSPort": 8443,
   "Verbose": true,
   "KeepAcceptEncoding": false,
   "PreventParseHeader": false,
@@ -55,5 +56,14 @@
       "Enable": true,
       "Remarks": "拦截多个社交媒体域名（逗号分隔）"
     }
-  ]
+  ],
+  "MinioConfig": {
+    "endpoint": "127.0.0.1:9000",
+    "publicEndpoint": "",
+    "accessKeyId": "root",
+    "secretAccessKey": "12345678",
+    "useSSL": false,
+    "bucket": "bodydata",
+    "enabled": true
+  }
 }

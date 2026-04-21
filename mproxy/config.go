@@ -37,7 +37,8 @@ type AccessRule struct {
 
 // ServerConfig 全局代理服务器配置接口定义
 type ServerConfig struct {
-	Port               int  `json:"Port"` // 代理监听端口
+	Port               int  `json:"Port"`      // HTTP 代理监听端口
+	HTTPSPort          int  `json:"HTTPSPort"` // HTTPS 代理监听端口
 	Verbose            bool `json:"Verbose"`
 	KeepAcceptEncoding bool `json:"KeepAcceptEncoding"`
 	PreventParseHeader bool `json:"PreventParseHeader"`
@@ -100,6 +101,7 @@ func NewConfigManager(filePath string) *ConfigManager {
 func DefaultConfig() *ServerConfig {
 	return &ServerConfig{
 		Port:               8080,
+		HTTPSPort:          8443,
 		Verbose:            true,
 		KeepAcceptEncoding: false,
 		PreventParseHeader: false,
