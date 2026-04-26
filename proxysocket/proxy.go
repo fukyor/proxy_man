@@ -190,12 +190,13 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 			hub.proxy.CloseAndRemoveConnection(id)
 		case "closeUserConnections":
 			targetIP, _ := msg["ip"].(string)
+			targetIP = mproxy.NormalizeIP(targetIP)
 			if targetIP == "" {
 				break
 			}
 			hub.proxy.Connections.Range(func(key, value any) bool {
 				info := value.(*mproxy.ConnectionInfo)
-				if mproxy.ExtractIP(info.RemoteAddr) == targetIP {
+				if mproxy.ResolveConnectionClientIP(info) == targetIP {
 					hub.proxy.CloseAndRemoveConnection(info.Session)
 				}
 				return true
@@ -205,7 +206,9 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 			protectedIPs := make(map[string]bool)
 			hub.proxy.Connections.Range(func(_, value any) bool {
 				info := value.(*mproxy.ConnectionInfo)
-				protectedIPs[mproxy.ExtractIP(info.RemoteAddr)] = true
+				if clientIP := mproxy.ResolveConnectionClientIP(info); clientIP != "" {
+					protectedIPs[clientIP] = true
+				}
 				return true
 			})
 			// 清理
@@ -249,6 +252,7 @@ func (ws *WebsocketServer) handleConfig() http.HandlerFunc {
 			// 热重载访问控制
 			if ws.Proxy.AccessControl != nil {
 				ws.Proxy.AccessControl.ReloadFromConfig()
+				ws.Proxy.AccessControl.CloseBlockedConnections()
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 

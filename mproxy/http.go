@@ -30,10 +30,12 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithCancel(r.Context())
 	r = r.WithContext(ctx)
 	defer cancel() // 确保函数退出时清理 Context，避免内存泄露，context本质也是通道占用内存
+	clientIP := getClientIP(r)
 
 	ctxt := &Pcontext{
 		core_proxy:     proxy,
 		Req:            r,
+		ClientIP:       clientIP,
 		TrafficCounter: &TrafficCounter{},
 		Session:        atomic.AddInt64(&proxy.sess, 1),
 	}
@@ -45,6 +47,7 @@ func (proxy *CoreHttpServer) MyHttpHandle(w http.ResponseWriter, r *http.Request
 		Method:      r.Method,
 		URL:         r.URL.String(),
 		RemoteAddr:  r.RemoteAddr,
+		ClientIP:    clientIP,
 		Protocol:    "HTTP",
 		StartTime:   time.Now(),
 		Status:      "Active",
@@ -189,11 +192,13 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 
 	// 保存原始 RemoteAddr，后续所有请求共用
 	remoteAddr := r.RemoteAddr
+	clientIP := getClientIP(r)
 
 	// ========== 创建虚拟隧道（与 HTTPS MITM 的顶层隧道对齐） ==========
 	topctx := &Pcontext{
 		core_proxy:     proxy,
 		Req:            r,
+		ClientIP:       clientIP,
 		TrafficCounter: &TrafficCounter{},
 		Session:        atomic.AddInt64(&proxy.sess, 1),
 	}
@@ -206,6 +211,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 		Method:      "Tcp-Keep-Alive",
 		URL:         r.Host,
 		RemoteAddr:  remoteAddr,
+		ClientIP:    clientIP,
 		Protocol:    "HTTP_MUX",
 		StartTime:   time.Now(),
 		Status:      "Active",
@@ -238,6 +244,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 			Req:            req,
 			parCtx:         topctx, // 指向虚拟隧道
 			UserData:       topctx.UserData,
+			ClientIP:       topctx.ClientIP,
 			RoundTripper:   topctx.RoundTripper,
 			TrafficCounter: &TrafficCounter{},
 			Session:        atomic.AddInt64(&proxy.sess, 1),
@@ -252,6 +259,7 @@ func (proxy *CoreHttpServer) myHttpHandleWithEngine(w http.ResponseWriter, r *ht
 			Method:       req.Method,
 			URL:          req.URL.String(),
 			RemoteAddr:   remoteAddr,
+			ClientIP:     ctxt.ClientIP,
 			Protocol:     "HTTP-MITM",
 			StartTime:    time.Now(),
 			Status:       "Active",

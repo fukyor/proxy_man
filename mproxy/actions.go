@@ -20,9 +20,10 @@ type ruleMatcher struct {
 
 // AccessController 访问控制器，支持热重载
 type AccessController struct {
-	proxy    *CoreHttpServer
-	mu       sync.RWMutex
-	matchers []ruleMatcher
+	proxy          *CoreHttpServer
+	mu             sync.RWMutex
+	matchers       []ruleMatcher
+	blockedClients map[string]bool
 }
 
 // NewAccessController 创建访问控制器并绑定 Hook
@@ -41,27 +42,28 @@ func NewAccessController(proxy *CoreHttpServer) *AccessController {
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		clientIP := getClientIP(req)
+		clientIP := ctx.ClientIP
+		if clientIP == "" {
+			clientIP = getClientIP(req)
+		}
 
 		ac.mu.RLock()
 		matchers := ac.matchers
+		blockedClients := ac.blockedClients
 		ac.mu.RUnlock()
+
+		if blockedClients[clientIP] {
+			ctx.Log_P("[访问控制] 拦截请求: 客户端=%s, 目标=%s, 规则=%s:%s",
+				clientIP, host, "UserIP", clientIP)
+			pushInterceptLog(clientIP, host, "UserIP", clientIP)
+			return req, ForbiddenResponse(req, "403 Access Denied")
+		}
 
 		for _, matcher := range matchers {
 			if matcher.matchFunc(host) {
 				ctx.Log_P("[访问控制] 拦截请求: 客户端=%s, 目标=%s, 规则=%s:%s",
 					clientIP, host, matcher.ruleType, matcher.ruleValue)
-				// 非阻塞发送到拦截日志通道
-				select {
-				case InterceptLogChan <- InterceptLogMessage{
-					ClientIP:  clientIP,
-					Target:    host,
-					RuleType:  matcher.ruleType,
-					RuleValue: matcher.ruleValue,
-					Time:      time.Now(),
-				}:
-				default:
-				}
+				pushInterceptLog(clientIP, host, matcher.ruleType, matcher.ruleValue)
 				return req, ForbiddenResponse(req, "403 Access Denied")
 			}
 		}
@@ -74,27 +76,29 @@ func NewAccessController(proxy *CoreHttpServer) *AccessController {
 			return nil, ""
 		}
 		hostOnly := stripPort(host)
-		clientIP := getClientIP(ctx.Req)
+		clientIP := ctx.ClientIP
+		if clientIP == "" {
+			clientIP = getClientIP(ctx.Req)
+		}
 
 		ac.mu.RLock()
 		matchers := ac.matchers
+		blockedClients := ac.blockedClients
 		ac.mu.RUnlock()
+
+		if blockedClients[clientIP] {
+			ctx.Log_P("[访问控制] 拦截 CONNECT: 客户端=%s, 目标=%s, 规则=%s:%s",
+				clientIP, host, "UserIP", clientIP)
+			pushInterceptLog(clientIP, host, "UserIP", clientIP)
+			ctx.Resp = ForbiddenResponse(ctx.Req, "403 Access Denied")
+			return RejectConnect, host
+		}
 
 		for _, matcher := range matchers {
 			if matcher.matchFunc(hostOnly) {
 				ctx.Log_P("[访问控制] 拦截 CONNECT: 客户端=%s, 目标=%s, 规则=%s:%s",
 					clientIP, host, matcher.ruleType, matcher.ruleValue)
-				// 非阻塞发送到拦截日志通道
-				select {
-				case InterceptLogChan <- InterceptLogMessage{
-					ClientIP:  clientIP,
-					Target:    host,
-					RuleType:  matcher.ruleType,
-					RuleValue: matcher.ruleValue,
-					Time:      time.Now(),
-				}:
-				default:
-				}
+				pushInterceptLog(clientIP, host, matcher.ruleType, matcher.ruleValue)
 				ctx.Resp = ForbiddenResponse(ctx.Req, "403 Access Denied")
 				return RejectConnect, host
 			}
@@ -117,14 +121,7 @@ func (ac *AccessController) ReloadFromConfig() {
 		if !rule.Enable {
 			continue
 		}
-		rawValues := strings.Split(rule.Value, ",")
-		var values []string
-		for _, v := range rawValues {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				values = append(values, v)
-			}
-		}
+		values := splitCSVValues(rule.Value)
 		if len(values) == 0 {
 			continue
 		}
@@ -183,10 +180,80 @@ func (ac *AccessController) ReloadFromConfig() {
 		})
 	}
 
+	newBlockedClients := make(map[string]bool)
+	for _, rule := range cfg.UserBlockRules {
+		if !rule.Enable {
+			continue
+		}
+		for _, rawIP := range splitCSVValues(rule.Value) {
+			normalized := NormalizeIP(rawIP)
+			if normalized == "" {
+				ac.proxy.Logger.Printf("WARN: 非法来源 IP 拦截规则值 %q", rawIP)
+				continue
+			}
+			newBlockedClients[normalized] = true
+		}
+	}
+
 	// 锁内原子替换
 	ac.mu.Lock()
 	ac.matchers = newMatchers
+	ac.blockedClients = newBlockedClients
 	ac.mu.Unlock()
+}
+
+// CloseBlockedConnections 关闭当前命中来源 IP 黑名单的活跃连接
+func (ac *AccessController) CloseBlockedConnections() {
+	if !ac.proxy.Config.GetConfig().AccessEnable {
+		return
+	}
+	ac.proxy.Connections.Range(func(key, value any) bool {
+		info := value.(*ConnectionInfo)
+		if info.Status != "Active" {
+			return true
+		}
+		if !ac.isBlockedClient(ResolveConnectionClientIP(info)) {
+			return true
+		}
+		ac.proxy.CloseAndRemoveConnection(key.(int64))
+		return true
+	})
+}
+
+func (ac *AccessController) isBlockedClient(clientIP string) bool {
+	clientIP = NormalizeIP(clientIP)
+	if clientIP == "" {
+		return false
+	}
+	ac.mu.RLock()
+	blocked := ac.blockedClients[clientIP]
+	ac.mu.RUnlock()
+	return blocked
+}
+
+func splitCSVValues(raw string) []string {
+	rawValues := strings.Split(raw, ",")
+	values := make([]string, 0, len(rawValues))
+	for _, v := range rawValues {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+func pushInterceptLog(clientIP, target, ruleType, ruleValue string) {
+	select {
+	case InterceptLogChan <- InterceptLogMessage{
+		ClientIP:  clientIP,
+		Target:    target,
+		RuleType:  ruleType,
+		RuleValue: ruleValue,
+		Time:      time.Now(),
+	}:
+	default:
+	}
 }
 
 // 流量计数器
@@ -209,7 +276,10 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		GlobalTrafficUp.Add(ctx.TrafficCounter.req_header)
 
 		// 获取用户流量统计指针（仅在握手期获取一次）
-		clientIP := getClientIP(req)
+		clientIP := ctx.ClientIP
+		if clientIP == "" {
+			clientIP = getClientIP(req)
+		}
 		host := ExtractHost(req.Host)
 		if host == "" {
 			host = ExtractHost(req.URL.Host)
@@ -268,7 +338,10 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 		// 获取用户流量统计指针
 		var userStats *UserHostStats
 		if ctx.Req != nil {
-			clientIP := getClientIP(ctx.Req)
+			clientIP := ctx.ClientIP
+			if clientIP == "" {
+				clientIP = getClientIP(ctx.Req)
+			}
 			host := ExtractHost(ctx.Req.Host)
 			if host == "" && ctx.Req.URL != nil {
 				host = ExtractHost(ctx.Req.URL.Host)
@@ -451,24 +524,34 @@ func AddAccessControl(proxy *CoreHttpServer) *AccessController {
 
 // getClientIP 从请求中提取客户端 IP
 func getClientIP(req *http.Request) string {
+	if req == nil {
+		return "unknown"
+	}
+
 	// 优先检查 X-Forwarded-For 和 X-Real-IP
 	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
 		// 取第一个 IP
 		if idx := strings.Index(xff, ","); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
+			if ip := NormalizeIP(xff[:idx]); ip != "" {
+				return ip
+			}
+		} else if ip := NormalizeIP(xff); ip != "" {
+			return ip
 		}
-		return xff
 	}
-	if xri := req.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+	if ip := NormalizeIP(req.Header.Get("X-Real-IP")); ip != "" {
+		return ip
 	}
 
 	// 从 RemoteAddr 提取
 	if req.RemoteAddr != "" {
-		if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-			return host
+		host := req.RemoteAddr
+		if parsedHost, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			host = parsedHost
 		}
-		return req.RemoteAddr
+		if ip := NormalizeIP(host); ip != "" {
+			return ip
+		}
 	}
 
 	return "unknown"

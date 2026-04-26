@@ -2,6 +2,7 @@ package mproxy
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -119,6 +120,34 @@ func ExtractIP(addr string) string {
 		return host
 	}
 	return addr
+}
+
+// NormalizeIP 规范化 IP 字符串，非法值返回空串
+func NormalizeIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	ip := net.ParseIP(raw)
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.String()
+}
+
+// ResolveConnectionClientIP 获取连接的统一来源 IP，优先使用保存的 ClientIP
+func ResolveConnectionClientIP(info *ConnectionInfo) string {
+	if info == nil {
+		return ""
+	}
+	if ip := NormalizeIP(info.ClientIP); ip != "" {
+		return ip
+	}
+	return NormalizeIP(ExtractIP(info.RemoteAddr))
 }
 
 // ExtractHost 从请求中提取纯 Host（去端口，用于统计 key）

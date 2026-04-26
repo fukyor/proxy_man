@@ -315,9 +315,11 @@ func copyOrWarn(ctx *Pcontext, dst io.Writer, src io.Reader) error {
 
 func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Request) {
 	// 统计connect的session号，是最基础的tcp连接，所有数据都通过该隧道
+	clientIP := getClientIP(r)
 	topctx := &Pcontext{
 		core_proxy:     proxy,
 		Req:            r,
+		ClientIP:       clientIP,
 		TrafficCounter: &TrafficCounter{},
 		Session:        atomic.AddInt64(&proxy.sess, 1),
 	}
@@ -343,6 +345,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		Method:      "CONNECT",
 		URL:         r.URL.Host,
 		RemoteAddr:  r.RemoteAddr,
+		ClientIP:    clientIP,
 		Protocol:    "TUNNEL",
 		StartTime:   time.Now(),
 		Status:      "Active",
@@ -401,10 +404,9 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 
 		// 设置用户流量统计指针（Tunnel 模式）
 		{
-			clientIP := getClientIP(r)
 			monitorHost := ExtractHost(r.URL.Host)
-			if clientIP != "" && clientIP != "unknown" && monitorHost != "" {
-				uStats := GlobalUserTraffic.GetOrCreateStats(clientIP, monitorHost)
+			if topctx.ClientIP != "" && topctx.ClientIP != "unknown" && monitorHost != "" {
+				uStats := GlobalUserTraffic.GetOrCreateStats(topctx.ClientIP, monitorHost)
 				if proxyClientTCP != nil {
 					proxyClientTCP.userStats = uStats
 				}
@@ -415,6 +417,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 		Counter_Ctxt := &Pcontext{
 			core_proxy:                    proxy,
 			Req:                           r,
+			ClientIP:                      topctx.ClientIP,
 			tunnelTrafficClient:           proxyClientTCP,
 			tunnelTrafficClientNoClosable: proxyClientTCPNo,
 			Session:                       topctx.Session,
@@ -433,6 +436,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			Method:      "TUNNEL",
 			URL:         url_.String(),
 			RemoteAddr:  r.RemoteAddr,
+			ClientIP:    topctx.ClientIP,
 			Protocol:    "HTTPS-Tunnel",
 			StartTime:   time.Now(),
 			Status:      "Active",
@@ -548,7 +552,8 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 				Session:        atomic.AddInt64(&proxy.sess, 1),
 				core_proxy:     proxy,
 				parCtx:         topctx,
-				UserData:       topctx.UserData,     // 继承用户数据
+				UserData:       topctx.UserData, // 继承用户数据
+				ClientIP:       topctx.ClientIP,
 				RoundTripper:   topctx.RoundTripper, // 继承自定义 RoundTripper
 				TrafficCounter: &TrafficCounter{},
 			}
@@ -562,7 +567,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 			}
 
 			req.RemoteAddr = r.RemoteAddr
-			ctxt.Log_P("client ip: %v, request Host %v", r.RemoteAddr, r.Host)
+			ctxt.Log_P("client ip: %v, request Host %v", ctxt.ClientIP, r.Host)
 
 			if !strings.HasPrefix(req.URL.String(), scheme+"://") {
 				req.URL, err = url.Parse(scheme + "://" + r.Host + req.URL.String())
@@ -580,6 +585,7 @@ func (proxy *CoreHttpServer) MyHttpsHandle(w http.ResponseWriter, r *http.Reques
 					Method:       req.Method,
 					URL:          req.URL.String(),
 					RemoteAddr:   r.RemoteAddr,
+					ClientIP:     ctxt.ClientIP,
 					Protocol:     protocolLabel,
 					StartTime:    time.Now(),
 					Status:       "Active",

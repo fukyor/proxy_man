@@ -13,7 +13,7 @@
   "ProxyNodes": [
     {
       "Name": "clash",
-      "URL": "http://127.0.0.1:7892"
+      "URL": "http://127.0.0.1:7897"
     }
   ],
   "Routes": [
@@ -50,6 +50,7 @@
       "Remarks": ""
     }
   ],
+  "UserBlockRules": [],
   "MinioConfig": {
     "endpoint": "127.0.0.1:9000",
     "publicEndpoint": "",

@@ -174,6 +174,7 @@ func (h *WebSocketHub) StartConnectionPusher() {
 					"method":    info.Method,
 					"url":       info.URL,
 					"remote":    info.RemoteAddr,
+					"clientIp":  mproxy.ResolveConnectionClientIP(info),
 					"protocol":  info.Protocol,
 					"startTime": info.StartTime,
 					"status":    info.Status,
@@ -370,7 +371,9 @@ func (h *WebSocketHub) StartUserTrafficPusher() {
 			activeIPs := make(map[string]bool)
 			h.proxy.Connections.Range(func(_, value any) bool {
 				info := value.(*mproxy.ConnectionInfo)
-				activeIPs[mproxy.ExtractIP(info.RemoteAddr)] = true
+				if clientIP := mproxy.ResolveConnectionClientIP(info); clientIP != "" {
+					activeIPs[clientIP] = true
+				}
 				return true
 			})
 			snapshot := mproxy.GlobalUserTraffic.Snapshot(activeIPs)

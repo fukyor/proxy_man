@@ -35,6 +35,14 @@ type AccessRule struct {
 	Remarks string `json:"Remarks"` // 用户备注
 }
 
+// UserBlockRule 来源 IP 拦截规则配置
+type UserBlockRule struct {
+	Id      int    `json:"Id"`      // 前端生成的唯一 ID
+	Value   string `json:"Value"`   // 被拦截来源 IP，逗号分隔支持多个
+	Enable  bool   `json:"Enable"`  // 该条规则的独立开关
+	Remarks string `json:"Remarks"` // 用户备注
+}
+
 // ServerConfig 全局代理服务器配置接口定义
 type ServerConfig struct {
 	Port               int  `json:"Port"`      // HTTP 代理监听端口
@@ -56,8 +64,9 @@ type ServerConfig struct {
 	Routes      []RouteRule `json:"Routes"`
 
 	// 访问控制相关配置
-	AccessEnable bool         `json:"AccessEnable"` // 访问控制总开关
-	AccessRules  []AccessRule `json:"AccessRules"`  // 访问控制规则列表
+	AccessEnable   bool            `json:"AccessEnable"`   // 访问控制总开关
+	AccessRules    []AccessRule    `json:"AccessRules"`    // 访问控制规则列表
+	UserBlockRules []UserBlockRule `json:"UserBlockRules"` // 来源 IP 拦截规则列表
 
 	// MinIO 对象存储配置
 	MinioConfig myminio.Config `json:"MinioConfig"`
@@ -114,6 +123,7 @@ func DefaultConfig() *ServerConfig {
 		Routes:             []RouteRule{},
 		AccessEnable:       false,
 		AccessRules:        []AccessRule{},
+		UserBlockRules:     []UserBlockRule{},
 		MinioConfig:        *myminio.DefaultMinioConfig(),
 	}
 }
