@@ -90,6 +90,7 @@ func (ws *WebsocketServer) StartControlServer() bool {
 		}
 	})
 	mux.HandleFunc("/api/config", ws.handleConfig()) // 配置管理 API
+	mux.HandleFunc("/api/stats", ws.handleStats())   // 统计数据 API
 	mux.HandleFunc("/", handleStaticFiles)           // 静态文件服务 + SPA fallback
 
 	corsMiddleware := cors.New(cors.Options{
@@ -223,6 +224,20 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 				hub.proxy.Logger.Printf("INFO %d 清理离线用户: 删除 %d 条记录", 0, deleted)
 			}
 		}
+	}
+}
+
+// handleStats 处理运行期统计数据查询
+func (ws *WebsocketServer) handleStats() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]uint64{
+			"interceptCount": mproxy.GetInterceptCount(),
+		})
 	}
 }
 

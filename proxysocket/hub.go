@@ -306,16 +306,18 @@ func (h *WebSocketHub) StartInterceptLogPusher() {
 				batch = append(batch, msg)
 				if len(batch) >= 100 {
 					h.broadcastToTopic("intercept_logs", map[string]any{
-						"type": "intercept_log_batch",
-						"data": batch,
+						"type":           "intercept_log_batch",
+						"data":           batch,
+						"interceptCount": mproxy.GetInterceptCount(),
 					})
 					batch = batch[:0]
 				}
 			case <-ticker.C:
 				if len(batch) > 0 {
 					h.broadcastToTopic("intercept_logs", map[string]any{
-						"type": "intercept_log_batch",
-						"data": batch,
+						"type":           "intercept_log_batch",
+						"data":           batch,
+						"interceptCount": mproxy.GetInterceptCount(),
 					})
 					batch = batch[:0]
 				}

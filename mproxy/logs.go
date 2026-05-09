@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +35,14 @@ type InterceptLogMessage struct {
 
 // InterceptLogChan 拦截日志推送通道
 var InterceptLogChan = make(chan InterceptLogMessage, 500)
+
+// InterceptCount 记录当前后端进程内累计拦截次数
+var InterceptCount atomic.Uint64
+
+// GetInterceptCount 返回当前后端进程内累计拦截次数
+func GetInterceptCount() uint64 {
+	return InterceptCount.Load()
+}
 
 // 日志收集器，包装原有 Logger
 type LogCollector struct {
