@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"path/filepath"
 	"proxy_man/myminio"
-	"strings"
 	"sync"
 )
 
@@ -81,10 +79,6 @@ type ConfigManager struct {
 
 // NewConfigManager 初始化配置管理器。如果配置文件不存在，则创建默认配置并写入
 func NewConfigManager(filePath string) *ConfigManager {
-	// 相对路径自动转换为可执行文件目录下的绝对路径
-	if !filepath.IsAbs(filePath) {
-		filePath = filepath.Join(GetExecutableDir(), filePath)
-	}
 	cm := &ConfigManager{
 		FilePath: filePath,
 		Current:  DefaultConfig(),
@@ -126,38 +120,6 @@ func DefaultConfig() *ServerConfig {
 		UserBlockRules:     []UserBlockRule{},
 		MinioConfig:        *myminio.DefaultMinioConfig(),
 	}
-}
-
-// getExecutableDir 获取可执行文件所在目录
-// go run 产生的临时二进制路径包含 "go-build"，此时回退到工作目录
-func GetExecutableDir() string {
-	exePath, err := os.Executable()
-	if err != nil {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "." // 最后的回退方案
-		}
-		return wd
-	}
-
-	realPath, err := filepath.EvalSymlinks(exePath)
-	if err != nil {
-		realPath = exePath
-	}
-
-	dir := filepath.Dir(realPath)
-
-	// go run 编译的临时二进制位于含 "go-build" 的临时目录
-	// 或者路径在系统临时目录下，都回退到工作目录
-	if strings.Contains(dir, "go-build") || strings.Contains(dir, os.TempDir()) {
-		wd, err := os.Getwd()
-		if err != nil {
-			return "."
-		}
-		return wd
-	}
-
-	return dir
 }
 
 // Load 从本地磁盘读取 JSON 配置文件，反序列化合并到内存

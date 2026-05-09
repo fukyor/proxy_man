@@ -1,42 +1,42 @@
 # ==============================================================================
 # 变量定义
 # ==============================================================================
-# 路径配置
 FRONTEND_DIR := ../proxyui
 PROXY_SOCKET := proxysocket
+DIST_DIR := $(PROXY_SOCKET)/dist
+BIN := proxy_man_linux
 
-# Go 编译参数
+GO ?= go
+NPM ?= npm
 LDFLAGS := -w -s
 
 # ==============================================================================
-# 伪目标声明 (防止和同名文件冲突)
+# WSL/Linux 构建目标
 # ==============================================================================
-.PHONY: all build-ui copy-dist build-win build-linux clean
+.PHONY: all build build-ui copy-dist run test clean
 
-# ...前面的变量定义保持不变...
+all: build
 
-all: build-win build-linux
-	@echo ""
-	@echo "====== All platforms built successfully! ======"
+build: copy-dist
+	@echo "[3/3] 编译 Linux 版本: $(BIN) ..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN) main.go
 
 build-ui:
-	@echo "[1/3] Building Vue Frontend..."
-	cd $(FRONTEND_DIR) && npm run build
+	@echo "[1/3] 构建 Vue 前端..."
+	cd $(FRONTEND_DIR) && $(NPM) run build
 
 copy-dist: build-ui
-	@echo "[2/3] Copying dist to Go directory..."
-	rm -rf $(PROXY_SOCKET)/dist
-	cp -r $(FRONTEND_DIR)/dist $(PROXY_SOCKET)/
+	@echo "[2/3] 复制前端产物到 Go 嵌入目录..."
+	rm -rf $(DIST_DIR)
+	cp -r $(FRONTEND_DIR)/dist $(DIST_DIR)
 
-build-win: copy-dist
-	@echo "[3/3] Compiling Windows version: proxy_man_win.exe ..."
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o win.exe main.go
+run: copy-dist
+	$(GO) run .
 
-build-linux: copy-dist
-	@echo "[3/3] Compiling Linux version: proxy_man_linux ..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o linux main.go
+test:
+	$(GO) test ./...
 
 clean:
-	@echo "清理历史构建产物..."
-	rm -rf $(PROXY_SOCKET)/dist
-	rm -f proxy_man_win.exe proxy_man_linux
+	@echo "清理 WSL 构建产物..."
+	rm -rf $(DIST_DIR)
+	rm -f $(BIN) test_bin

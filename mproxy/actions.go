@@ -244,6 +244,7 @@ func splitCSVValues(raw string) []string {
 }
 
 func pushInterceptLog(clientIP, target, ruleType, ruleValue string) {
+	InterceptCount.Add(1)
 	select {
 	case InterceptLogChan <- InterceptLogMessage{
 		ClientIP:  clientIP,

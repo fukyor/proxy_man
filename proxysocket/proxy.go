@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"proxy_man/mproxy"
 	"strings"
@@ -90,6 +91,7 @@ func (ws *WebsocketServer) StartControlServer() bool {
 		}
 	})
 	mux.HandleFunc("/api/config", ws.handleConfig()) // 配置管理 API
+	mux.HandleFunc("/api/stats", ws.handleStats())   // 统计数据 API
 	mux.HandleFunc("/", handleStaticFiles)           // 静态文件服务 + SPA fallback
 
 	corsMiddleware := cors.New(cors.Options{
@@ -107,15 +109,20 @@ func (ws *WebsocketServer) StartControlServer() bool {
 	hub.StartInterceptLogPusher()
 	hub.StartUserTrafficPusher()
 
-	var err error
-	go func() {
-		err = http.ListenAndServe(ws.Addr, corsMiddleware.Handler(mux))
-	}()
-	// 通道有两种架构，非阻塞和阻塞通道，这里需要阻塞通道
+	listener, err := net.Listen("tcp", ws.Addr)
 	if err != nil {
 		log.Printf("Socket Server failed to start: %v", err)
 		return false
 	}
+
+	server := &http.Server{
+		Handler: corsMiddleware.Handler(mux),
+	}
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("Socket Server stopped unexpectedly: %v", err)
+		}
+	}()
 	return true
 }
 
@@ -223,6 +230,20 @@ func (ws *WebsocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 				hub.proxy.Logger.Printf("INFO %d 清理离线用户: 删除 %d 条记录", 0, deleted)
 			}
 		}
+	}
+}
+
+// handleStats 处理运行期统计数据查询
+func (ws *WebsocketServer) handleStats() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != "GET" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]uint64{
+			"interceptCount": mproxy.GetInterceptCount(),
+		})
 	}
 }
 

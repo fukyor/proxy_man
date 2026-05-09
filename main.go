@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	//_ "net/http/pprof"
 	"proxy_man/mproxy"
 	"proxy_man/proxysocket"
@@ -15,7 +16,11 @@ func main() {
 	proxy := mproxy.NewCoreHttpSever()
 
 	// 1. 初始化配置（显式赋值，无副作用）
-	proxy.Config = mproxy.NewConfigManager("config.json")
+	configPath := os.Getenv("PROXY_MAN_CONFIG_PATH")
+	if configPath == "" {
+		log.Fatal("未设置 PROXY_MAN_CONFIG_PATH，Docker 部署必须显式指定持久化配置文件路径")
+	}
+	proxy.Config = mproxy.NewConfigManager(configPath)
 	cfg := proxy.Config.GetConfig()
 
 	// 2. 日志收集器

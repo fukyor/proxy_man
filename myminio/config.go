@@ -32,7 +32,7 @@ type Client struct {
 // DefaultMinioConfig 提供一套开箱即用的默认 MinIO 配置
 func DefaultMinioConfig() *Config {
 	return &Config{
-		Endpoint:        "127.0.0.1:9000",
+		Endpoint:        "minio:9000",
 		PublicEndpoint:  "",
 		AccessKeyID:     "root",
 		SecretAccessKey: "12345678",
@@ -100,8 +100,9 @@ func NewClient(cfg Config) (*Client, error) {
 		log.Println("========================================================")
 		log.Println("⚠️  警告：未配置 MinIO PublicEndpoint (公网/外网 Endpoint)")
 		log.Println("========================================================")
-		log.Println("警告：如果未配置该项，您将无法生成并在外网完成远程直链下载！")
-		log.Println("请在 Web UI 高级设置中配置 MinIO PublicEndpoint，以便代理正常下发直链。")
+		log.Printf("将使用内部 Endpoint 生成预签名链接: %s", cfg.Endpoint)
+		log.Println("该链接只适合容器网络访问；Windows 浏览器下载请在 Web UI 配置 PublicEndpoint=127.0.0.1:9000")
+		log.Println("云服务器部署时，请将 PublicEndpoint 配置为公网 IP 或域名。")
 		log.Println("========================================================")
 		log.Println("")
 	}
