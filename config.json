@@ -47,7 +47,7 @@
   ],
   "UserBlockRules": [],
   "MinioConfig": {
-    "endpoint": "127.0.0.1:9000",
+    "endpoint": "minio:9000",
     "publicEndpoint": "",
     "accessKeyId": "root",
     "secretAccessKey": "12345678",

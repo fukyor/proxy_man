@@ -100,9 +100,9 @@ func NewClient(cfg Config) (*Client, error) {
 		log.Println("========================================================")
 		log.Println("⚠️  警告：未配置 MinIO PublicEndpoint (公网/外网 Endpoint)")
 		log.Println("========================================================")
-		log.Printf("将使用内部 Endpoint 生成预签名链接: %s", cfg.Endpoint)
-		log.Println("该链接只适合容器网络访问；Windows 浏览器下载请在 Web UI 配置 PublicEndpoint=127.0.0.1:9000")
-		log.Println("云服务器部署时，请将 PublicEndpoint 配置为公网 IP 或域名。")
+		log.Printf("内部 Endpoint 仅用于代理服务访问 MinIO: %s", cfg.Endpoint)
+		log.Println("浏览器下载将通过控制服务转发，避免向 Windows 下发 minio:9000 这类容器内地址。")
+		log.Println("如需绕过控制服务直连 MinIO，可在 Web UI 配置 PublicEndpoint。")
 		log.Println("========================================================")
 		log.Println("")
 	}

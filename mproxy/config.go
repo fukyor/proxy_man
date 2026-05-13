@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"path/filepath"
 	"proxy_man/myminio"
 	"sync"
 )
@@ -143,11 +144,28 @@ func (cm *ConfigManager) Load() error {
 		return err
 	}
 
+	cm.normalizeDockerConfig()
+
 	// 强制写回磁盘一次：确保像 MinIO 这样新增的默认配置字段，
 	// 能够回写到已有的 config.json 文件中，从而让用户可见
 	cm.saveLocked()
 
 	return nil
+}
+
+func (cm *ConfigManager) normalizeDockerConfig() {
+	if !isDockerConfigPath(cm.FilePath) {
+		return
+	}
+	if cm.Current.MinioConfig.Endpoint == "127.0.0.1:9000" {
+		log.Println("检测到 Docker 持久化配置仍使用 127.0.0.1:9000，已自动迁移为 minio:9000")
+		cm.Current.MinioConfig.Endpoint = myminio.DefaultMinioConfig().Endpoint
+	}
+}
+
+func isDockerConfigPath(filePath string) bool {
+	cleanPath := filepath.Clean(filePath)
+	return cleanPath == "/data/proxy_config/config.json"
 }
 
 // Save 将当前内存配置持久化写入磁盘。写入时使用临时文件原子重命名以防损坏。

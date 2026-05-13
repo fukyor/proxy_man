@@ -2,10 +2,11 @@ package myminio
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/url"
 	"time"
-	"fmt"
+
 	"github.com/minio/minio-go/v7"
 )
 
@@ -31,6 +32,11 @@ func (c *Client) StatObject(key string) (minio.ObjectInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return c.Client.StatObject(ctx, c.Config.Bucket, key, minio.StatObjectOptions{})
+}
+
+// GetObject 从 MinIO 读取对象内容
+func (c *Client) GetObject(ctx context.Context, key string) (*minio.Object, error) {
+	return c.Client.GetObject(ctx, c.Config.Bucket, key, minio.GetObjectOptions{})
 }
 
 // GetPresignedURL 生成预签名下载 URL
