@@ -13,22 +13,21 @@ var (
 )
 
 type TrafficCounter struct {
-	resp_header int64	// remote->client的头部总大小
-	resp_body int64		// remote->client的body总大小
-	req_header int64	// client->proxy头部总大小
-	req_body int64		// client->proxy body总大小
-	req_sum int64		// 等于 req_header+req_body
-	resp_sum int64		// 等于 resp_header+resp_body
-	total int64        // 等于req_sum + resp_sum
+	resp_header int64 // remote->client的头部总大小
+	resp_body   int64 // remote->client的body总大小
+	req_header  int64 // client->proxy头部总大小
+	req_body    int64 // client->proxy body总大小
+	req_sum     int64 // 等于 req_header+req_body
+	resp_sum    int64 // 等于 resp_header+resp_body
+	total       int64 // 等于req_sum + resp_sum
 }
 
-
 type reqBodyReader struct {
-	io.ReadCloser          // 嵌入原始 req.Body(包含字段有header,body,socket)
-	counter   *TrafficCounter // 指向全局计数器
-	Pcounter  *TrafficCounter
-	onClose   func()          // 关闭时的回调函数，用于打印/记录日志
-	userStats *UserHostStats  // 用户流量统计指针
+	io.ReadCloser                 // 嵌入原始 req.Body(包含字段有header,body,socket)
+	counter       *TrafficCounter // 指向全局计数器
+	Pcounter      *TrafficCounter
+	onClose       func()         // 关闭时的回调函数，用于打印/记录日志
+	userStats     *UserHostStats // 用户流量统计指针
 }
 
 func (r *reqBodyReader) Read(p []byte) (n int, err error) {
@@ -49,14 +48,12 @@ func (r *reqBodyReader) Close() error {
 	return r.ReadCloser.Close()
 }
 
-
-
 type respBodyReader struct {
-	io.ReadCloser          // 嵌入原始 resp.Body(包含字段有header,body,socket)
-	counter   *TrafficCounter // 指向全局计数器
-	Pcounter  *TrafficCounter
-	onClose   func()          // 关闭时的回调函数，用于打印/记录日志
-	userStats *UserHostStats  // 用户流量统计指针
+	io.ReadCloser                 // 嵌入原始 resp.Body(包含字段有header,body,socket)
+	counter       *TrafficCounter // 指向全局计数器
+	Pcounter      *TrafficCounter
+	onClose       func()         // 关闭时的回调函数，用于打印/记录日志
+	userStats     *UserHostStats // 用户流量统计指针
 }
 
 func (r *respBodyReader) Read(p []byte) (n int, err error) {
@@ -81,22 +78,21 @@ func (r *respBodyReader) Close() error {
 	return r.ReadCloser.Close()
 }
 
-
-func (c *TrafficCounter) UpdateTotal(){
+func (c *TrafficCounter) UpdateTotal() {
 	c.total = c.req_sum + c.resp_sum
 }
 
-func GetHeaderSize(r any, ctx *Pcontext) int64{
+func GetHeaderSize(r any, ctx *Pcontext) int64 {
 	var tmp []byte
 	var err error
 	switch v := r.(type) {
 	case *http.Request:
-		tmp, err = httputil.DumpRequest(v, false) 
+		tmp, err = httputil.DumpRequest(v, false)
 	case *http.Response:
 		tmp, err = httputil.DumpResponse(v, false)
 	}
-	if err != nil{
-		ctx.Log_P("头部大小解析错误", err)
+	if err != nil {
+		ctx.Log_P("头部大小解析错误: %v", err)
 		return 0
 	}
 	return int64(len(tmp))

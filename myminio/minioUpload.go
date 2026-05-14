@@ -2,6 +2,7 @@ package myminio
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 )
+
+const uploadTempDir = "myminio/tmp"
 
 // BodyCapture Body上传状态
 type BodyCapture struct {
@@ -54,6 +57,7 @@ func shouldSkipCapture(contentType string) bool {
 //   - bodyType: "req" 或 "resp"
 //   - contentType: Content-Type 头
 //   - contentLength: HTTP Content-Length（-1 表示未知）
+//
 // 返回:
 //   - *bodyCaptReader: 包装后的 Reader
 func (c *Client) BuildBodyReader(inner io.ReadCloser, sessionID int64, bodyType, contentType string, contentLength int64) *bodyCaptReader {
@@ -113,30 +117,35 @@ func (r *bodyCaptReader) uploadToMinIO(pr *io.PipeReader) {
 }
 
 // uploadViaTempFile 通过临时文件上传（用于未知大小的情况）
-func (r *bodyCaptReader) uploadViaTempFile(ctx context.Context, pr *io.PipeReader) (minio.UploadInfo, error) {
+func (r *bodyCaptReader) uploadViaTempFile(ctx context.Context, pr *io.PipeReader) (info minio.UploadInfo, retErr error) {
 	// 使用相对路径便于调试观察
-	if err := os.MkdirAll("myminio/tmp", 0755); err != nil {
+	if err := os.MkdirAll(uploadTempDir, 0755); err != nil {
 		return minio.UploadInfo{}, fmt.Errorf("创建临时目录失败: %w", err)
 	}
-	tempFile, err := os.CreateTemp("myminio/tmp", "upload-*.tmp")
+	tempFile, err := os.CreateTemp(uploadTempDir, "upload-*.tmp")
 	if err != nil {
 		return minio.UploadInfo{}, fmt.Errorf("创建临时文件失败: %w", err)
 	}
 	tempPath := tempFile.Name()
 
-	// 确保清理（延迟到函数末尾）
-	defer os.Remove(tempPath)
+	// 先关闭再删除，避免 Windows 下文件句柄未释放导致 Remove 失败。
+	defer func() {
+		if err := tempFile.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("关闭临时文件失败: %w", err)
+		}
+		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) && retErr == nil {
+			retErr = fmt.Errorf("清理临时文件失败: %w", err)
+		}
+	}()
 
 	// 1. 写入临时文件
 	size, err := io.Copy(tempFile, pr)
 	if err != nil {
-		tempFile.Close()
 		return minio.UploadInfo{}, fmt.Errorf("写入临时文件失败: %w", err)
 	}
 
 	// 2. 重置文件指针
 	if _, err := tempFile.Seek(0, 0); err != nil {
-		tempFile.Close()
 		return minio.UploadInfo{}, fmt.Errorf("重置文件指针失败: %w", err)
 	}
 
@@ -149,11 +158,7 @@ func (r *bodyCaptReader) uploadViaTempFile(ctx context.Context, pr *io.PipeReade
 	// 1. 不需要担心minio上传大文件导致OOM，因为size较大时minio会使用分片上传，大概也只会消耗几十MB的内存作为minio客户端和socket之间的缓冲
 	// 2. 那为什么大文件上传不直接设置为-1，使用自动分片？因为S3 标准最多允许 10,000 个分片。10000个分片是存储桶中存储对象的分块数量，所以
 	// 导致了SDK最多可以分10000块上传，我们传入文件大小辅助minio确定分片最小大小为size/10000。有助于更小的内存占用。
-	info, err := r.client.PutObjectWithSize(ctx, r.Capture.ObjectKey, tempFile, size, contentType)
-
-	// 4. 上传完成后关闭文件（在 Remove 之前）
-	tempFile.Close()
-
+	info, err = r.client.PutObjectWithSize(ctx, r.Capture.ObjectKey, tempFile, size, contentType)
 	return info, err
 }
 

@@ -237,7 +237,8 @@ func (h *WebSocketHub) sendLogBatch(batch []*mproxy.LogMessage) {
 	for i, msg := range batch {
 		allItems[i] = map[string]any{
 			"level": msg.Level, "session": msg.Session,
-			"message": msg.Message, "time": msg.Time,
+			"message": msg.Message, "category": msg.Category,
+			"time": msg.Time,
 		}
 	}
 

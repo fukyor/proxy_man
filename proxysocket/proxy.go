@@ -288,11 +288,23 @@ func handleStaticFiles(w http.ResponseWriter, r *http.Request) {
 	f, err := distFS.Open(path)
 	if err == nil {
 		f.Close()
+		if path == "index.html" {
+			w.Header().Set("Cache-Control", "no-store")
+		} else if strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		staticFileServer.ServeHTTP(w, r)
 		return
 	}
 
-	// 文件不存在 → 返回 index.html，由 Vue Router 接管
+	// 带扩展名的静态资源不存在时直接返回 404，避免旧 hash 资源被错误替换成 index.html。
+	if strings.Contains(path, ".") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 前端路由路径不存在对应文件时返回 index.html，由 Vue Router 接管。
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(indexHTML)
 }
