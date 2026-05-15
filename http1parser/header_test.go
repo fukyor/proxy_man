@@ -6,9 +6,10 @@ import (
 	"net/textproto"
 	"testing"
 
+	"proxy_man/http1parser"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"proxy_man/http1parser"
 )
 
 func TestHttp1ExtractHeaders_Empty(t *testing.T) {
