@@ -3,7 +3,6 @@ module proxy_man
 go 1.25.5
 
 require (
-	github.com/elazarl/goproxy v1.7.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/minio/minio-go/v7 v7.0.98
 	github.com/rs/cors v1.11.1
