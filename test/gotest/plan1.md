@@ -79,8 +79,8 @@ const (
     ProxyAddr = "127.0.0.1:8080"
 
     // 后端服务器地址
-    HttpBackendBaseURL  = "http://127.0.0.1:9001"
-    HttpsBackendBaseURL = "https://127.0.0.1:9002"
+    HttpBackendBaseURL  = "http://127.0.0.1:9011"
+    HttpsBackendBaseURL = "https://127.0.0.1:9012"
 
     // 测试数据目录
     TestDataDir = `E:\D\zuoyewenjian\MyProject\proxy_man\test\data`
@@ -405,9 +405,9 @@ req.ContentLength = int64(len(data))  // HTTP 头：Content-Length: 1048576
    go run backend_server.go
    
    # 在另一个终端验证新接口
-   curl "http://localhost:9001/test/download/chunked?file=large_1m.bin" -o test.bin
+   curl "http://localhost:9011/test/download/chunked?file=large_1m.bin" -o test.bin
    # 检查响应头是否包含 Transfer-Encoding: chunked
-   curl -I "http://localhost:9001/test/download/chunked?file=large_1m.bin"
+   curl -I "http://localhost:9011/test/download/chunked?file=large_1m.bin"
    ```
 
 2. **编译验证**

@@ -320,7 +320,7 @@ func AddTrafficMonitor(proxy *CoreHttpServer) {
 
 	// 响应阶段
 	proxy.HookOnResp().DoFunc(func(resp *http.Response, ctx *Pcontext) *http.Response {
-		if ctx.TrafficCounter == nil {
+		if resp == nil || ctx.TrafficCounter == nil {
 			return resp
 		}
 

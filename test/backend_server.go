@@ -5,19 +5,18 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"path/filepath"
-	"time"
 	"os"
+	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // TestData 测试数据结构
 type TestData struct {
-	Name   string
-	Size   int64
-	Data   []byte
+	Name string
+	Size int64
+	Data []byte
 }
-
 
 // generateBytes 生成指定长度的测试字节流
 func generateBytes(size int64) []byte {
@@ -36,14 +35,14 @@ func handleTestDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "缺少 file 参数", http.StatusBadRequest)
 		return
 	}
-    // 从磁盘读取文件
-    filePath := filepath.Join(`data`, filename)
+	// 从磁盘读取文件
+	filePath := filepath.Join(`data`, filename)
 
-    file, err := os.Open(filePath)
-    if err != nil {
-        http.Error(w, "文件不存在", http.StatusNotFound)
-        return
-    }
+	file, err := os.Open(filePath)
+	if err != nil {
+		http.Error(w, "文件不存在", http.StatusNotFound)
+		return
+	}
 	defer file.Close()
 
 	fileInfo, err := file.Stat()
@@ -52,21 +51,21 @@ func handleTestDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    // 保留原有的自定义逻辑
-    w.Header().Set("Content-Type", "application/octet-stream")
-    w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-    w.Header().Set("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
+	// 保留原有的自定义逻辑
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	w.Header().Set("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
 
-    start := time.Now()
-    written, err := io.Copy(w, file)
-    duration := time.Since(start)
+	start := time.Now()
+	written, err := io.Copy(w, file)
+	duration := time.Since(start)
 
-    if err != nil {
-        log.Printf("[下载失败] 文件: %s | 已发送: %d | 错误: %v", filename, written, err)
-    } else {
-        log.Printf("[下载] 文件: %s | 大小: %d 字节 | 耗时: %v | 速度: %.2f MB/s",
-            filename, written, duration, float64(written)/(1024*1024)/duration.Seconds())
-    }
+	if err != nil {
+		log.Printf("[下载失败] 文件: %s | 已发送: %d | 错误: %v", filename, written, err)
+	} else {
+		log.Printf("[下载] 文件: %s | 大小: %d 字节 | 耗时: %v | 速度: %.2f MB/s",
+			filename, written, duration, float64(written)/(1024*1024)/duration.Seconds())
+	}
 }
 
 // handleTestUpload 处理测试上传请求
@@ -163,21 +162,21 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
     </style>
 </head>
 <body>
-    <h1>🧪 测试后端服务器 (端口 9001)</h1>
+    <h1>🧪 测试后端服务器 (端口 9011)</h1>
     <div class="endpoint">
-        <div><span class="method">GET</span> <span class="path">http://localhost:9001/test/download?file=small_1k.bin</span></div>
+        <div><span class="method">GET</span> <span class="path">http://localhost:9011/test/download?file=small_1k.bin</span></div>
         <div class="desc">返回 1KB 测试数据</div>
     </div>
     <div class="endpoint">
-        <div><span class="method">GET</span> <span class="path">http://localhost:9001/test/download?file=medium_100k.bin</span></div>
+        <div><span class="method">GET</span> <span class="path">http://localhost:9011/test/download?file=medium_100k.bin</span></div>
         <div class="desc">返回 100KB 测试数据</div>
     </div>
     <div class="endpoint">
-        <div><span class="method">GET</span> <span class="path">http://localhost:9001/test/download?file=large_1m.bin</span></div>
+        <div><span class="method">GET</span> <span class="path">http://localhost:9011/test/download?file=large_1m.bin</span></div>
         <div class="desc">返回 1MB 测试数据</div>
     </div>
     <div class="endpoint">
-        <div><span class="method">POST</span> <span class="path">http://localhost:9001/test/upload</span></div>
+        <div><span class="method">POST</span> <span class="path">http://localhost:9011/test/upload</span></div>
         <div class="desc">接收上传数据并返回统计信息</div>
     </div>
     <div class="endpoint">
@@ -206,17 +205,17 @@ func main() {
 	mux.HandleFunc("/test/download/chunked", handleTestDownloadChunked)
 	mux.HandleFunc("/test/upload", handleTestUpload)
 
-	// 2. 配置 HTTP 服务器 (端口 9001)
+	// 2. 配置 HTTP 服务器 (端口 9011)
 	httpServer := &http.Server{
-		Addr:         ":9001",
+		Addr:         ":9011",
 		Handler:      mux, // 使用共享的 mux
 		ReadTimeout:  5 * time.Minute,
 		WriteTimeout: 5 * time.Minute,
 	}
 
-	// 3. 配置 HTTPS 服务器 (端口 9002)
+	// 3. 配置 HTTPS 服务器 (端口 9012)
 	httpsServer := &http.Server{
-		Addr:         ":9002",
+		Addr:         ":9012",
 		Handler:      mux, // 使用共享的 mux
 		ReadTimeout:  5 * time.Minute,
 		WriteTimeout: 5 * time.Minute,
@@ -225,7 +224,7 @@ func main() {
 	// 4. 在 Goroutine 中启动 HTTP 服务器
 	// 使用 go 关键字使其在后台运行，不会阻塞后续代码
 	go func() {
-		log.Println("🚀 HTTP  服务器启动在 :9001 (无加密)")
+		log.Println("🚀 HTTP  服务器启动在 :9011 (无加密)")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP 服务器启动失败: %v", err)
 		}
@@ -233,9 +232,9 @@ func main() {
 
 	// 5. 在主线程启动 HTTPS 服务器
 	// 注意：这里需要传入刚才生成的证书路径
-	log.Println("🔒 HTTPS 服务器启动在 :9002 (TLS加密)")
-	log.Println("📄 访问 http://localhost:9001 或 https://localhost:9002")
-	
+	log.Println("🔒 HTTPS 服务器启动在 :9012 (TLS加密)")
+	log.Println("📄 访问 http://localhost:9011 或 https://localhost:9012")
+
 	// ListenAndServeTLS 会阻塞主线程，保持程序运行
 	if err := httpsServer.ListenAndServeTLS("server.crt", "server.key"); err != nil && err != http.ErrServerClosed {
 		log.Fatal("HTTPS 服务器启动失败:", err)

@@ -87,9 +87,13 @@ func GetHeaderSize(r any, ctx *Pcontext) int64 {
 	var err error
 	switch v := r.(type) {
 	case *http.Request:
-		tmp, err = httputil.DumpRequest(v, false)
+		if v != nil {
+			tmp, err = httputil.DumpRequest(v, false)
+		}
 	case *http.Response:
-		tmp, err = httputil.DumpResponse(v, false)
+		if v != nil {
+			tmp, err = httputil.DumpResponse(v, false)
+		}
 	}
 	if err != nil {
 		ctx.Log_P("头部大小解析错误: %v", err)
