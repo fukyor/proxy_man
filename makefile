@@ -39,4 +39,4 @@ build-linux: copy-dist
 clean:
 	@echo "清理历史构建产物..."
 	rm -rf $(PROXY_SOCKET)/dist
-	rm -f proxy_man_win.exe proxy_man_linux
+	rm -f win.exe linux
