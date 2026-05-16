@@ -25,7 +25,7 @@ const (
 	// 请根据实际情况修改端口，例如 8081, 8000 等
 	HttpBackendBaseURL  = "http://127.0.0.1:9011"
 	HttpBackendAddr     = "127.0.0.1:9011"
-	HttpsBackendBaseURL = "https://localhost:9012"
+	HttpsBackendBaseURL = "https://127.0.0.1:9012"
 
 	// 测试数据目录
 	TestDataDir = `../data`
@@ -44,7 +44,7 @@ var (
 
 func init() {
 	var err error
-	Payload, err = os.ReadFile(filepath.Join(TestDataDir, "large_2m.bin"))
+	Payload, err = os.ReadFile(filepath.Join(TestDataDir, "large_100m.bin"))
 	if err != nil {
 		panic("加载测试数据失败: " + err.Error())
 	}

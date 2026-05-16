@@ -80,7 +80,7 @@ const (
 
     // 后端服务器地址
     HttpBackendBaseURL  = "http://127.0.0.1:9011"
-    HttpsBackendBaseURL = "https://localhost:9012"
+    HttpsBackendBaseURL = "https://127.0.0.1:9012"
 
     // 测试数据目录
     TestDataDir = `E:\D\zuoyewenjian\MyProject\proxy_man\test\data`
