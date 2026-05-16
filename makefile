@@ -37,6 +37,6 @@ test:
 	$(GO) test ./...
 
 clean:
-	@echo "清理 WSL 构建产物..."
-	rm -rf $(DIST_DIR)
-	rm -f $(BIN) test_bin
+	@echo "清理历史构建产物..."
+	rm -rf $(PROXY_SOCKET)/dist
+	rm -f win.exe linux
