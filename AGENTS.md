@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **proxycore** (1276 symbols, 3595 relationships, 111 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **xxxxx** (1358 symbols, 3826 relationships, 117 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **proxycore** (1276 symbols, 3595 relatio
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/proxycore/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/proxycore/clusters` | All functional areas |
-| `gitnexus://repo/proxycore/processes` | All execution flows |
-| `gitnexus://repo/proxycore/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/xxxxx/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/xxxxx/clusters` | All functional areas |
+| `gitnexus://repo/xxxxx/processes` | All execution flows |
+| `gitnexus://repo/xxxxx/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

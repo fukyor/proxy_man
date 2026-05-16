@@ -23,9 +23,9 @@ const (
 
 	// 后端服务器地址 (您手动启动的 backend_server 地址)
 	// 请根据实际情况修改端口，例如 8081, 8000 等
-	HttpBackendBaseURL = "http://127.0.0.1:9001"
-	HttpBackendAddr    = "127.0.0.1:9001"
-	HttpsBackendBaseURL = "https://127.0.0.1:9002"
+	HttpBackendBaseURL  = "http://127.0.0.1:9011"
+	HttpBackendAddr     = "127.0.0.1:9011"
+	HttpsBackendBaseURL = "https://localhost:9012"
 
 	// 测试数据目录
 	TestDataDir = `../data`
@@ -78,7 +78,6 @@ func init() {
 	}
 }
 
-
 // ========== 上行压力测试 ==========
 // go test -bench=Benchmark_Stress_HTTP_Upload_KnownSize -benchtime=1s -run=^$ -v -cpu 2,6,12
 // go tool pprof -http=:8081 http://localhost:6060/debug/pprof/heap
@@ -100,7 +99,6 @@ func Benchmark_Stress_HTTP_Upload_KnownSize(b *testing.B) {
 		}
 	})
 }
-
 
 // go test -bench=Benchmark_Stress_HTTP_Upload_Chunked -benchtime=3s -run=^$ -v -cpu 2,6,12
 // go tool pprof -http=:8081 http://localhost:6060/debug/pprof/heap
