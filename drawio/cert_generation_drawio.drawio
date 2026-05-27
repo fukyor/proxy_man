@@ -1,0 +1,534 @@
+<mxfile host="app.diagrams.net" agent="Codex">
+  <diagram id="proxycore-cert-generation" name="证书生成图">
+    <mxGraphModel dx="1327" dy="619" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2600" pageHeight="2750" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;" value="ProxyCore 伪造证书生成路径" vertex="1">
+          <mxGeometry height="30" width="2460" x="40" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="mitm_seq_box" parent="1" style="swimlane;startSize=30;rounded=0;html=1;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;" value="MITM 站点证书生成时序图" vertex="1">
+          <mxGeometry height="750" width="1200" x="40" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_client" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="客户端" vertex="1">
+          <mxGeometry height="620" width="130" x="40" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_proxy" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="CoreHttpServer" vertex="1">
+          <mxGeometry height="620" width="130" x="220" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_handle" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="MyHttpsHandle" vertex="1">
+          <mxGeometry height="620" width="130" x="400" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_tls" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="TLSConfigFromCA" vertex="1">
+          <mxGeometry height="620" width="140" x="600" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_signer" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="signer.SignHost" vertex="1">
+          <mxGeometry height="620" width="140" x="800" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_target" parent="mitm_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="目标服务器" vertex="1">
+          <mxGeometry height="620" width="130" x="1010" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_note1" parent="mitm_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="代码路径：ServeHTTP 遇到 CONNECT 后进入 MyHttpsHandle；MITM 分支只在首字节为 TLS 握手时生成站点证书。" vertex="1">
+          <mxGeometry height="45" width="1100" x="40" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="msp1" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="105" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="msp2" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="285" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="msp3" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="285" y="175" as="geometry" />
+        </mxCell>
+        <mxCell id="msp4" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="175" as="geometry" />
+        </mxCell>
+        <mxCell id="msp5" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="msp6" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="105" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="msp7" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="265" as="geometry" />
+        </mxCell>
+        <mxCell id="msp8" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="670" y="265" as="geometry" />
+        </mxCell>
+        <mxCell id="msp9" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="670" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="msp10" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="870" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="msp11" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="870" y="355" as="geometry" />
+        </mxCell>
+        <mxCell id="msp12" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="670" y="355" as="geometry" />
+        </mxCell>
+        <mxCell id="msp13" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="670" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="msp14" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="msp15" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="445" as="geometry" />
+        </mxCell>
+        <mxCell id="msp16" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="105" y="445" as="geometry" />
+        </mxCell>
+        <mxCell id="msp17" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="505" as="geometry" />
+        </mxCell>
+        <mxCell id="msp18" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="1075" y="505" as="geometry" />
+        </mxCell>
+        <mxCell id="msp19" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="1075" y="555" as="geometry" />
+        </mxCell>
+        <mxCell id="msp20" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="555" as="geometry" />
+        </mxCell>
+        <mxCell id="msp21" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="465" y="605" as="geometry" />
+        </mxCell>
+        <mxCell id="msp22" parent="mitm_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="105" y="605" as="geometry" />
+        </mxCell>
+        <mxCell id="mse1" edge="1" parent="mitm_seq_box" source="msp1" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp2" value="CONNECT example.com:443">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse2" edge="1" parent="mitm_seq_box" source="msp3" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp4" value="ServeHTTP 分发 CONNECT">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse3" edge="1" parent="mitm_seq_box" source="msp5" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp6" value="HTTP/1.0 200 OK，进入 MITM">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse4" edge="1" parent="mitm_seq_box" source="msp7" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp8" value="strategy.TLSConfig(host, topctx)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse5" edge="1" parent="mitm_seq_box" source="msp9" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp10" value="SignHost(Proxy_ManCa, [hostname])">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse6" edge="1" parent="mitm_seq_box" source="msp11" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="msp12" value="tls.Certificate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse7" edge="1" parent="mitm_seq_box" source="msp13" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="msp14" value="tls.Config 加入伪造站点证书">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse8" edge="1" parent="mitm_seq_box" source="msp15" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp16" value="tls.Server 握手，返回伪造证书">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse9" edge="1" parent="mitm_seq_box" source="msp17" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp18" value="RoundTrip 明文请求">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse10" edge="1" parent="mitm_seq_box" source="msp19" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="msp20" value="响应">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mse11" edge="1" parent="mitm_seq_box" source="msp21" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="msp22" value="过滤响应并写回客户端">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_note2" parent="mitm_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=11;" value="内部处理：Hijack 客户端连接、创建 TUNNEL 记录、读取 MitmEnabled、执行 httpsHandlers、Peek 首字节确认 TLS。" vertex="1">
+          <mxGeometry height="50" width="360" x="390" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="ms_note3" parent="mitm_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=11;" value="SignHost 生成模板、SAN、私钥，并用 Proxy_ManCa 私钥调用 x509.CreateCertificate。" vertex="1">
+          <mxGeometry height="45" width="380" x="760" y="245" as="geometry" />
+        </mxCell>
+        <mxCell id="https_seq_box" parent="1" style="swimlane;startSize=30;rounded=0;html=1;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;" value="HTTPS 代理监听证书生成时序图" vertex="1">
+          <mxGeometry height="750" width="1200" x="1300" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_main" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="main" vertex="1">
+          <mxGeometry height="620" width="120" x="25" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_config" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="ConfigManager" vertex="1">
+          <mxGeometry height="620" width="130" x="180" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_builder" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="BuildProxyListenerTLSConfig" vertex="1">
+          <mxGeometry height="620" width="160" x="345" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_os" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="操作系统" vertex="1">
+          <mxGeometry height="620" width="120" x="540" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_signer" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="signer.SignHost" vertex="1">
+          <mxGeometry height="620" width="140" x="695" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_server" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="httpsServer" vertex="1">
+          <mxGeometry height="620" width="130" x="880" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_client" parent="https_seq_box" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=24;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="客户端" vertex="1">
+          <mxGeometry height="620" width="120" x="1045" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_note1" parent="https_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="代码路径：main.go 启动阶段先生成 HTTPS 监听证书，再把 TLSConfig 挂到 httpsServer，ListenAndServeTLS 使用空证书路径启动。" vertex="1">
+          <mxGeometry height="45" width="1100" x="40" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp1" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="85" y="125" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp2" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="245" y="125" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp3" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="245" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp4" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="85" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp5" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="85" y="215" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp6" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="215" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp7" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp8" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="600" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp9" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="600" y="305" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp10" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="305" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp11" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="365" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp12" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="765" y="365" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp13" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="765" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp14" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp15" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="425" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp16" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="85" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp17" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="85" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp18" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="945" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp19" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="1110" y="575" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp20" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="945" y="575" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp21" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="945" y="625" as="geometry" />
+        </mxCell>
+        <mxCell id="hsp22" parent="https_seq_box" style="ellipse;html=1;fillColor=none;strokeColor=none;" value="" vertex="1">
+          <mxGeometry height="2" width="2" x="1110" y="625" as="geometry" />
+        </mxCell>
+        <mxCell id="hse1" edge="1" parent="https_seq_box" source="hsp1" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp2" value="NewConfigManager 加载 config.json">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse2" edge="1" parent="https_seq_box" source="hsp3" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="hsp4" value="ServerConfig">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse3" edge="1" parent="https_seq_box" source="hsp5" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp6" value="BuildProxyListenerTLSConfig(cfg)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse4" edge="1" parent="https_seq_box" source="hsp7" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp8" value="os.Hostname()">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse5" edge="1" parent="https_seq_box" source="hsp9" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="hsp10" value="hostname">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse6" edge="1" parent="https_seq_box" source="hsp11" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp12" value="SignHost(Proxy_ManCa, hosts)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse7" edge="1" parent="https_seq_box" source="hsp13" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="hsp14" value="多 SAN tls.Certificate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse8" edge="1" parent="https_seq_box" source="hsp15" style="endArrow=open;dashed=1;html=1;rounded=0;strokeColor=#666666;fontSize=11;" target="hsp16" value="tls.Config{证书，http/1.1}">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse9" edge="1" parent="https_seq_box" source="hsp17" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp18" value="设置 TLSConfig 并启动 8443">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse10" edge="1" parent="https_seq_box" source="hsp19" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp20" value="TLS 连接 HTTPS 代理端口">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hse11" edge="1" parent="https_seq_box" source="hsp21" style="endArrow=block;html=1;rounded=0;strokeColor=#333333;fontSize=11;" target="hsp22" value="使用监听证书完成握手">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_note2" parent="https_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=11;" value="Builder 内部：hostSet 加入 127.0.0.1、localhost、::1、本机 hostname 和 cfg.PublicIPs，然后排序。" vertex="1">
+          <mxGeometry height="55" width="350" x="345" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="hs_note3" parent="https_seq_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=11;" value="SignHost 按 hosts 写入 IPAddresses 或 DNSNames，生成单张多 SAN 监听证书。" vertex="1">
+          <mxGeometry height="45" width="420" x="665" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="mitm_flow_box" parent="1" style="swimlane;startSize=30;rounded=0;html=1;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;" value="MITM 站点证书生成流程图" vertex="1">
+          <mxGeometry height="1840" width="1200" x="40" y="850" as="geometry">
+            <mxRectangle height="30" width="177" x="40" y="850" as="alternateBounds" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="mf_start" parent="mitm_flow_box" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="收到 CONNECT 请求" vertex="1">
+          <mxGeometry height="60" width="150" x="520" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_serve" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="ServeHTTP 调用&#xa;MyHttpsHandle" vertex="1">
+          <mxGeometry height="60" width="150" x="520" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_hijack" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="Hijack 客户端连接&#xa;创建 TUNNEL 记录" vertex="1">
+          <mxGeometry height="65" width="150" x="520" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_mitm_enabled" parent="mitm_flow_box" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="MitmEnabled&#xa;是否开启？" vertex="1">
+          <mxGeometry height="85" width="140" x="525" y="315" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_ok" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="默认 OkConnect" vertex="1">
+          <mxGeometry height="55" width="145" x="320" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_mitm" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="默认 MitmConnect" vertex="1">
+          <mxGeometry height="55" width="145" x="720" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_handlers" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="执行 httpsHandlers&#xa;允许覆盖策略" vertex="1">
+          <mxGeometry height="60" width="150" x="520" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_strategy" parent="mitm_flow_box" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="最终策略？" vertex="1">
+          <mxGeometry height="80" width="140" x="525" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_tunnel" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="ConnectAccept&#xa;普通隧道透传密文" vertex="1">
+          <mxGeometry height="65" width="170" x="120" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_reject" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" value="ConnectReject&#xa;写回拒绝并关闭" vertex="1">
+          <mxGeometry height="65" width="170" x="330" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_ok200" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="ConnectMitm 或&#xa;ConnectHTTPMitm&#xa;返回 200 OK" vertex="1">
+          <mxGeometry height="75" width="170" x="550" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_peek" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="Peek 首字节" vertex="1">
+          <mxGeometry height="55" width="170" x="550" y="835" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_is_tls" parent="mitm_flow_box" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="是否 TLS&#xa;Handshake？" vertex="1">
+          <mxGeometry height="85" width="140" x="565" y="920" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_http" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="否：HTTP-MITM&#xa;直接读明文请求" vertex="1">
+          <mxGeometry height="65" width="165" x="330" y="1015" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_tls_config" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="是：调用&#xa;strategy.TLSConfig" vertex="1">
+          <mxGeometry height="65" width="165" x="760" y="1015" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_strip" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="stripPort 得到 hostname&#xa;clone defaultTLSConfig" vertex="1">
+          <mxGeometry height="70" width="165" x="760" y="1105" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_store" parent="mitm_flow_box" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="ctx.certStore&#xa;是否存在？" vertex="1">
+          <mxGeometry height="85" width="140" x="772" y="1205" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_fetch" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="Fetch hostname&#xa;缓存或生成" vertex="1">
+          <mxGeometry height="60" width="150" x="620" y="1320" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_gen" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="直接 genCert" vertex="1">
+          <mxGeometry height="60" width="150" x="920" y="1320" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_sign" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="SignHost 用 Proxy_ManCa&#xa;签发目标站点证书" vertex="1">
+          <mxGeometry height="70" width="170" x="760" y="1410" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_handshake" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="tls.Server 握手&#xa;客户端信任 CA 后解密" vertex="1">
+          <mxGeometry height="70" width="170" x="760" y="1510" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_forward" parent="mitm_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="读取 HTTP 请求&#xa;filterRequest + RoundTrip" vertex="1">
+          <mxGeometry height="70" width="175" x="520" y="1610" as="geometry" />
+        </mxCell>
+        <mxCell id="mf_resp" parent="mitm_flow_box" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="filterResponse&#xa;写回客户端" vertex="1">
+          <mxGeometry height="65" width="175" x="520" y="1710" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe1" edge="1" parent="mitm_flow_box" source="mf_start" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_serve" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe2" edge="1" parent="mitm_flow_box" source="mf_serve" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_hijack" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe3" edge="1" parent="mitm_flow_box" source="mf_hijack" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_mitm_enabled" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe4" edge="1" parent="mitm_flow_box" source="mf_mitm_enabled" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_ok" value="否">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe5" edge="1" parent="mitm_flow_box" source="mf_mitm_enabled" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_mitm" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe6" edge="1" parent="mitm_flow_box" source="mf_ok" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_handlers" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe7" edge="1" parent="mitm_flow_box" source="mf_mitm" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_handlers" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe8" edge="1" parent="mitm_flow_box" source="mf_handlers" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_strategy" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe9" edge="1" parent="mitm_flow_box" source="mf_strategy" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_tunnel" value="Accept">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe10" edge="1" parent="mitm_flow_box" source="mf_strategy" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_reject" value="Reject">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe11" edge="1" parent="mitm_flow_box" source="mf_strategy" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_ok200" value="MITM">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe12" edge="1" parent="mitm_flow_box" source="mf_ok200" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_peek" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe13" edge="1" parent="mitm_flow_box" source="mf_peek" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_is_tls" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe14" edge="1" parent="mitm_flow_box" source="mf_is_tls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_http" value="否">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe15" edge="1" parent="mitm_flow_box" source="mf_is_tls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_tls_config" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe16" edge="1" parent="mitm_flow_box" source="mf_tls_config" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_strip" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe17" edge="1" parent="mitm_flow_box" source="mf_strip" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_store" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe18" edge="1" parent="mitm_flow_box" source="mf_store" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_fetch" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe19" edge="1" parent="mitm_flow_box" source="mf_store" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_gen" value="否">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe20" edge="1" parent="mitm_flow_box" source="mf_fetch" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_sign" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe21" edge="1" parent="mitm_flow_box" source="mf_gen" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_sign" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe22" edge="1" parent="mitm_flow_box" source="mf_sign" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_handshake" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe23" edge="1" parent="mitm_flow_box" source="mf_handshake" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_forward" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe24" edge="1" parent="mitm_flow_box" source="mf_http" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_forward" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mfe25" edge="1" parent="mitm_flow_box" source="mf_forward" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="mf_resp" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="https_flow_box" parent="1" style="swimlane;startSize=30;rounded=0;html=1;fillColor=#f8f9fa;strokeColor=#666666;fontStyle=1;" value="HTTPS 代理监听证书生成流程图" vertex="1">
+          <mxGeometry height="1840" width="1200" x="1300" y="850" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_start" parent="https_flow_box" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="程序启动 main" vertex="1">
+          <mxGeometry height="60" width="150" x="520" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_config" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="加载 config.json&#xa;得到 ServerConfig" vertex="1">
+          <mxGeometry height="65" width="150" x="520" y="135" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_call" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="调用&#xa;BuildProxyListenerTLSConfig" vertex="1">
+          <mxGeometry height="65" width="190" x="500" y="225" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_default_hosts" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="hostSet 加入&#xa;127.0.0.1&#xa;localhost&#xa;::1" vertex="1">
+          <mxGeometry height="85" width="170" x="510" y="315" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_hostname_ok" parent="https_flow_box" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="os.Hostname&#xa;成功且非空？" vertex="1">
+          <mxGeometry height="85" width="140" x="525" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_add_hostname" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="加入本机 hostname" vertex="1">
+          <mxGeometry height="55" width="155" x="320" y="550" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_skip_hostname" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="跳过 hostname" vertex="1">
+          <mxGeometry height="55" width="155" x="720" y="550" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_public" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="遍历 cfg.PublicIPs&#xa;trim 后加入非空值" vertex="1">
+          <mxGeometry height="70" width="170" x="510" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_sort" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="转换 hosts 切片&#xa;sort.Strings 排序" vertex="1">
+          <mxGeometry height="70" width="170" x="510" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_sign" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="signer.SignHost&#xa;(Proxy_ManCa, hosts)" vertex="1">
+          <mxGeometry height="70" width="170" x="510" y="830" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_ca" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="读取 CA Leaf&#xa;和 CA 私钥" vertex="1">
+          <mxGeometry height="65" width="160" x="260" y="935" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_san" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="IP 写入 IPAddresses&#xa;域名写入 DNSNames" vertex="1">
+          <mxGeometry height="65" width="170" x="510" y="935" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_key" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="按 CA 私钥类型&#xa;生成证书私钥" vertex="1">
+          <mxGeometry height="65" width="160" x="760" y="935" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_create" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="x509.CreateCertificate&#xa;签发多 SAN 监听证书" vertex="1">
+          <mxGeometry height="70" width="190" x="510" y="1035" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_tls_config" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="组装 tls.Config&#xa;Certificates=监听证书&#xa;NextProtos=http/1.1" vertex="1">
+          <mxGeometry height="85" width="200" x="500" y="1135" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_server" parent="https_flow_box" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="httpsServer 挂载 TLSConfig&#xa;ListenAndServeTLS 空路径启动" vertex="1">
+          <mxGeometry height="75" width="230" x="485" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="hf_client" parent="https_flow_box" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="客户端连接 HTTPS 代理端口&#xa;使用该监听证书完成握手" vertex="1">
+          <mxGeometry height="75" width="230" x="485" y="1355" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe1" edge="1" parent="https_flow_box" source="hf_start" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_config" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe2" edge="1" parent="https_flow_box" source="hf_config" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_call" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe3" edge="1" parent="https_flow_box" source="hf_call" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_default_hosts" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe4" edge="1" parent="https_flow_box" source="hf_default_hosts" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_hostname_ok" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe5" edge="1" parent="https_flow_box" source="hf_hostname_ok" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_add_hostname" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe6" edge="1" parent="https_flow_box" source="hf_hostname_ok" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_skip_hostname" value="否">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe7" edge="1" parent="https_flow_box" source="hf_add_hostname" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_public" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe8" edge="1" parent="https_flow_box" source="hf_skip_hostname" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_public" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe9" edge="1" parent="https_flow_box" source="hf_public" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_sort" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe10" edge="1" parent="https_flow_box" source="hf_sort" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_sign" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe11" edge="1" parent="https_flow_box" source="hf_sign" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_ca" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe12" edge="1" parent="https_flow_box" source="hf_sign" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_san" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe13" edge="1" parent="https_flow_box" source="hf_sign" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_key" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe14" edge="1" parent="https_flow_box" source="hf_ca" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_create" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe15" edge="1" parent="https_flow_box" source="hf_san" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_create" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe16" edge="1" parent="https_flow_box" source="hf_key" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_create" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe17" edge="1" parent="https_flow_box" source="hf_create" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_tls_config" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe18" edge="1" parent="https_flow_box" source="hf_tls_config" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_server" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hfe19" edge="1" parent="https_flow_box" source="hf_server" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;" target="hf_client" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

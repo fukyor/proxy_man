@@ -2,7 +2,6 @@ docs/**
 **/**.exe
 test/data/**
 myminio/tmp/
-.gitnexus
 # 嵌入的前端构建产物
 proxysocket/dist/
 # Linux 构建产物
